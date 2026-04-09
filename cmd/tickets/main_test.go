@@ -1073,6 +1073,149 @@ func TestReconcileBackfillsDoneTokens(t *testing.T) {
 	}
 }
 
+func TestReconcileFailAutoBlocksAtMaxRetry(t *testing.T) {
+	baseDir := t.TempDir()
+	t.Setenv("TICKETS_BASE_DIR", baseDir)
+	writeConfigFile(t, baseDir, "max_retry = 2\n")
+	withWorkingDir(t, baseDir)
+	withMockDispatcher(t, &dispatch.MockDispatcher{
+		StatusFunc: func(id string) (*dispatch.StatusResult, error) {
+			return &dispatch.StatusResult{Status: "failed"}, nil
+		},
+	})
+
+	mustRun(t, "init", "ALPHA", "--title", "Alpha")
+	id := strings.TrimSpace(mustRunStdout(t, "create", "--initiative", "ALPHA", "--title", "Auto block me", "--tier", "worker"))
+	mustRun(t, "dispatch", id, "--engine", "codex", "--model", "gpt-5.4")
+
+	// First fail via reconcile: attempts=0 < max_retry=2, stays failed.
+	mustRun(t, "reconcile")
+	doc := mustParseTicket(t, baseDir, id)
+	if doc.Card.Status != frontmatter.StatusFailed {
+		t.Fatalf("expected failed, got %s", doc.Card.Status)
+	}
+
+	// Reopen to increment attempts to 1, re-dispatch.
+	mustRun(t, "reopen", id)
+	mustRun(t, "dispatch", id, "--engine", "codex", "--model", "gpt-5.4")
+
+	// Second fail via reconcile: attempts=1 < max_retry=2, stays failed.
+	mustRun(t, "reconcile")
+	doc = mustParseTicket(t, baseDir, id)
+	if doc.Card.Status != frontmatter.StatusFailed {
+		t.Fatalf("expected failed after second attempt, got %s", doc.Card.Status)
+	}
+
+	// Reopen to increment attempts to 2, re-dispatch.
+	mustRun(t, "reopen", id)
+	mustRun(t, "dispatch", id, "--engine", "codex", "--model", "gpt-5.4")
+
+	// Third fail via reconcile: attempts=2 >= max_retry=2, should auto-block.
+	mustRun(t, "reconcile")
+	doc = mustParseTicket(t, baseDir, id)
+	if doc.Card.Status != frontmatter.StatusBlocked {
+		t.Fatalf("expected blocked after max_retry, got %s", doc.Card.Status)
+	}
+	if doc.Card.BlockReason == nil || !strings.Contains(*doc.Card.BlockReason, "Auto-blocked") {
+		t.Fatalf("expected auto-block reason, got %#v", doc.Card.BlockReason)
+	}
+	if !strings.Contains(doc.GetSection("Log"), "auto-blocked after 2 failed attempts") {
+		t.Fatalf("expected auto-block log entry, got %q", doc.GetSection("Log"))
+	}
+}
+
+func TestReconcileCompletionLogsTokenSummary(t *testing.T) {
+	baseDir := t.TempDir()
+	t.Setenv("TICKETS_BASE_DIR", baseDir)
+	withMockDispatcher(t, &dispatch.MockDispatcher{
+		StatusFunc: func(id string) (*dispatch.StatusResult, error) {
+			return &dispatch.StatusResult{
+				Status: "completed",
+				Tokens: &dispatch.TokenData{In: 500, Out: 200, Cache: 100, PeakContext: 8000},
+			}, nil
+		},
+	})
+
+	mustRun(t, "init", "ALPHA", "--title", "Alpha")
+	id := strings.TrimSpace(mustRunStdout(t, "create", "--initiative", "ALPHA", "--title", "Token log me", "--tier", "worker"))
+	mustRun(t, "dispatch", id, "--engine", "codex", "--model", "gpt-5.4")
+
+	doc := mustParseTicket(t, baseDir, id)
+	doc.SetSection("Result", "Agent completed the work.\n")
+	writeTicket(t, baseDir, id, doc)
+
+	mustRun(t, "reconcile")
+
+	doc = mustParseTicket(t, baseDir, id)
+	if doc.Card.Status != frontmatter.StatusDone {
+		t.Fatalf("expected done, got %s", doc.Card.Status)
+	}
+	logSection := doc.GetSection("Log")
+	if !strings.Contains(logSection, "tokens -- in=500 out=200 cache=100 peak_context=8000") {
+		t.Fatalf("expected token summary in log, got %q", logSection)
+	}
+}
+
+func TestClearDispatchFieldsPreservesCardSpec(t *testing.T) {
+	baseDir := t.TempDir()
+	t.Setenv("TICKETS_BASE_DIR", baseDir)
+	withMockDispatcher(t, &dispatch.MockDispatcher{})
+
+	mustRun(t, "init", "ALPHA", "--title", "Alpha")
+	id := strings.TrimSpace(mustRunStdout(t, "create", "--initiative", "ALPHA", "--title", "Preserve fields", "--tier", "worker"))
+
+	// Set card-spec fields before dispatch.
+	doc := mustParseTicket(t, baseDir, id)
+	doc.Card.Engine = stringPtr("codex")
+	doc.Card.Model = stringPtr("gpt-5.4")
+	doc.Card.Effort = stringPtr("high")
+	doc.Card.Profile = stringPtr("custom-profile")
+	doc.Card.WorkDir = stringPtr("/tmp/work")
+	doc.Card.Skills = []string{"web-search", "code-review"}
+	writeTicket(t, baseDir, id, doc)
+
+	mustRun(t, "dispatch", id)
+	mustRun(t, "fail", id, "--reason", "test failure")
+
+	// After fail, card-spec fields should still be there.
+	doc = mustParseTicket(t, baseDir, id)
+	if doc.Card.Status != frontmatter.StatusFailed {
+		t.Fatalf("expected failed, got %s", doc.Card.Status)
+	}
+
+	// Reopen triggers clearDispatchFields via FSM.
+	mustRun(t, "reopen", id)
+	doc = mustParseTicket(t, baseDir, id)
+
+	// Ephemeral fields should be cleared.
+	if doc.Card.DispatchID != nil {
+		t.Fatalf("expected dispatch_id cleared, got %v", *doc.Card.DispatchID)
+	}
+	if doc.Card.SessionID != nil {
+		t.Fatalf("expected session_id cleared, got %v", *doc.Card.SessionID)
+	}
+
+	// Card-spec fields should be preserved.
+	if doc.Card.Engine == nil || *doc.Card.Engine != "codex" {
+		t.Fatalf("expected engine preserved as codex, got %#v", doc.Card.Engine)
+	}
+	if doc.Card.Model == nil || *doc.Card.Model != "gpt-5.4" {
+		t.Fatalf("expected model preserved as gpt-5.4, got %#v", doc.Card.Model)
+	}
+	if doc.Card.Effort == nil || *doc.Card.Effort != "high" {
+		t.Fatalf("expected effort preserved as high, got %#v", doc.Card.Effort)
+	}
+	if doc.Card.Profile == nil || *doc.Card.Profile != "custom-profile" {
+		t.Fatalf("expected profile preserved, got %#v", doc.Card.Profile)
+	}
+	if doc.Card.WorkDir == nil || *doc.Card.WorkDir != "/tmp/work" {
+		t.Fatalf("expected work_dir preserved, got %#v", doc.Card.WorkDir)
+	}
+	if len(doc.Card.Skills) != 2 || doc.Card.Skills[0] != "web-search" {
+		t.Fatalf("expected skills preserved, got %#v", doc.Card.Skills)
+	}
+}
+
 func TestDispatchReady(t *testing.T) {
 	baseDir := t.TempDir()
 	t.Setenv("TICKETS_BASE_DIR", baseDir)

@@ -224,14 +224,12 @@ func appendLog(doc *frontmatter.Document, line string) {
 }
 
 func clearDispatchFields(card *frontmatter.Card) {
+	// Only clear ephemeral dispatch-runtime fields.
+	// Card-spec fields (engine, model, effort, profile, work_dir, skills)
+	// are intentionally preserved — they define HOW the ticket should be
+	// dispatched on retry and are set by the user or dispatch-ready logic.
 	card.DispatchID = nil
 	card.SessionID = nil
-	card.Profile = nil
-	card.Engine = nil
-	card.Model = nil
-	card.Effort = nil
-	card.WorkDir = nil
-	card.Skills = nil
 }
 
 func ticketTemplate(card frontmatter.Card) *frontmatter.Document {
