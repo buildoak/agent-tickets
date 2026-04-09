@@ -23,7 +23,7 @@ func getDispatcher() (dispatch.Dispatcher, error) {
 		return nil, err
 	}
 
-	return dispatch.NewShellDispatcher(cfg.AgentMuxBin), nil
+	return dispatch.NewShellDispatcher(cfg.AgentMuxBin, cfg.SkillPath), nil
 }
 
 func cmdDispatch(args []string) error {

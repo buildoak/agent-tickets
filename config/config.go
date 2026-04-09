@@ -18,6 +18,7 @@ const (
 type Config struct {
 	BaseDir     string   `toml:"base_dir"`
 	AgentMuxBin string   `toml:"agent_mux_bin"`
+	SkillPath   string   `toml:"skill_path"`
 	MaxRetry    int      `toml:"max_retry"`
 	Defaults    Defaults `toml:"defaults"`
 }

@@ -108,7 +108,7 @@ func TestMockDispatcherCustomStatusFunc(t *testing.T) {
 func TestShellDispatcherDispatchBuildsArgs(t *testing.T) {
 	t.Parallel()
 
-	dispatcher := NewShellDispatcher("")
+	dispatcher := NewShellDispatcher("", "")
 
 	args, contextFile, err := dispatcher.dispatchArgs(DispatchOptions{
 		Profile:    "default",
@@ -154,7 +154,7 @@ func TestShellDispatcherDispatchBuildsArgs(t *testing.T) {
 func TestShellDispatcherStatusBuildsArgs(t *testing.T) {
 	t.Parallel()
 
-	dispatcher := NewShellDispatcher("")
+	dispatcher := NewShellDispatcher("", "")
 
 	args := dispatcher.statusArgs("dispatch-123")
 	want := []string{"status", "dispatch-123", "--json"}
@@ -167,7 +167,7 @@ func TestShellDispatcherStatusBuildsArgs(t *testing.T) {
 func TestShellDispatcherDispatchBuildsArgsWithSkills(t *testing.T) {
 	t.Parallel()
 
-	dispatcher := NewShellDispatcher("")
+	dispatcher := NewShellDispatcher("", "")
 
 	args, contextFile, err := dispatcher.dispatchArgs(DispatchOptions{
 		Profile:    "default",
@@ -202,7 +202,7 @@ func TestShellDispatcherDispatchBuildsArgsWithSkills(t *testing.T) {
 func TestShellDispatcherDispatchOmitsCwdWhenEmpty(t *testing.T) {
 	t.Parallel()
 
-	dispatcher := NewShellDispatcher("")
+	dispatcher := NewShellDispatcher("", "")
 
 	args, contextFile, err := dispatcher.dispatchArgs(DispatchOptions{
 		Profile:    "default",
@@ -228,7 +228,7 @@ func TestShellDispatcherDispatchOmitsCwdWhenEmpty(t *testing.T) {
 func TestShellDispatcherDispatchPassesCwd(t *testing.T) {
 	t.Parallel()
 
-	dispatcher := NewShellDispatcher("")
+	dispatcher := NewShellDispatcher("", "")
 
 	args, contextFile, err := dispatcher.dispatchArgs(DispatchOptions{
 		Profile:    "default",
@@ -265,12 +265,65 @@ func TestShellDispatcherRunJSONIncludesStderr(t *testing.T) {
 		t.Fatalf("write script: %v", err)
 	}
 
-	dispatcher := NewShellDispatcher(script)
+	dispatcher := NewShellDispatcher(script, "")
 	err := dispatcher.runJSON([]string{"status", "dispatch-123", "--json"}, dir, &StatusResult{})
 	if err == nil {
 		t.Fatal("runJSON() error = nil, want non-nil")
 	}
 	if !strings.Contains(err.Error(), "backend exploded") {
 		t.Fatalf("runJSON() error = %q, want stderr text", err)
+	}
+}
+
+func TestShellDispatcherSkillPathInjectsEnv(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	// Script prints AGENT_MUX_SKILL_PATH from its environment as JSON so
+	// runJSON can parse it. This proves the env var reached the subprocess.
+	script := filepath.Join(dir, "agent-mux.sh")
+	if err := os.WriteFile(script, []byte(
+		"#!/bin/sh\nprintf '{\"skill_path\":\"%s\"}' \"$AGENT_MUX_SKILL_PATH\"\n",
+	), 0o755); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+
+	const wantPath = "/a/skills:/b/skills"
+	dispatcher := NewShellDispatcher(script, wantPath)
+
+	var result struct {
+		SkillPath string `json:"skill_path"`
+	}
+	if err := dispatcher.runJSON([]string{}, "", &result); err != nil {
+		t.Fatalf("runJSON() error = %v", err)
+	}
+	if result.SkillPath != wantPath {
+		t.Fatalf("AGENT_MUX_SKILL_PATH = %q, want %q", result.SkillPath, wantPath)
+	}
+}
+
+func TestShellDispatcherNoSkillPathLeavesEnvNil(t *testing.T) {
+	t.Parallel()
+
+	// When SkillPath is empty, cmd.Env should remain nil (inherit parent env).
+	// We verify by checking that the script sees the parent's env unchanged.
+	dir := t.TempDir()
+	script := filepath.Join(dir, "agent-mux.sh")
+	if err := os.WriteFile(script, []byte(
+		"#!/bin/sh\nprintf '{\"home\":\"%s\"}' \"$HOME\"\n",
+	), 0o755); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+
+	dispatcher := NewShellDispatcher(script, "")
+
+	var result struct {
+		Home string `json:"home"`
+	}
+	if err := dispatcher.runJSON([]string{}, "", &result); err != nil {
+		t.Fatalf("runJSON() error = %v", err)
+	}
+	if result.Home == "" {
+		t.Fatal("subprocess did not inherit parent HOME; cmd.Env may have been incorrectly set")
 	}
 }

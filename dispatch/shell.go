@@ -12,11 +12,17 @@ import (
 type ShellDispatcher struct {
 	// BinPath is the path to the agent-mux binary. Defaults to "agent-mux".
 	BinPath string
+
+	// SkillPath, when non-empty, is set as AGENT_MUX_SKILL_PATH in the
+	// subprocess environment so agent-mux can locate skills even when the
+	// parent shell hasn't sourced a login profile.
+	SkillPath string
 }
 
-// NewShellDispatcher returns a ShellDispatcher with the provided binary path.
-func NewShellDispatcher(binPath string) *ShellDispatcher {
-	return &ShellDispatcher{BinPath: binPath}
+// NewShellDispatcher returns a ShellDispatcher with the provided binary path
+// and optional skill path.
+func NewShellDispatcher(binPath, skillPath string) *ShellDispatcher {
+	return &ShellDispatcher{BinPath: binPath, SkillPath: skillPath}
 }
 
 func (s *ShellDispatcher) binPath() string {
@@ -80,6 +86,9 @@ func (s *ShellDispatcher) runJSON(args []string, workDir string, out any) error 
 	cmd := exec.Command(s.binPath(), args...)
 	if workDir != "" {
 		cmd.Dir = workDir
+	}
+	if s.SkillPath != "" {
+		cmd.Env = append(os.Environ(), "AGENT_MUX_SKILL_PATH="+s.SkillPath)
 	}
 	output, err := cmd.Output()
 	if err != nil {
