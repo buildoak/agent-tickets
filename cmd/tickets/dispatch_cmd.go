@@ -138,20 +138,14 @@ func dispatchTicket(baseDir, id string, d dispatch.Dispatcher, cfg config.Config
 		return nil, fmt.Errorf("ticket path must be absolute: %s", absPath)
 	}
 
-	dispatchResult, err := d.Dispatch(dispatch.DispatchOptions{
-		Profile:    resolvedOpts.Profile,
-		Engine:     resolvedOpts.Engine,
-		Model:      resolvedOpts.Model,
-		Effort:     resolvedOpts.Effort,
-		WorkDir:    resolvedOpts.WorkDir,
-		TicketPath: absPath,
-		Preamble:   dispatchPreamble(doc),
-		Skills:     resolvedOpts.Skills,
-	})
-	if err != nil {
-		return nil, err
-	}
+	// Compute preamble before writing dispatch metadata so the pre-dispatch
+	// body (including any prior Result/Log) is captured.
+	preamble := dispatchPreamble(doc)
 
+	// Phase 1: Write dispatch metadata to the card BEFORE calling agent-mux.
+	// This prevents a race condition where the worker modifies the card body
+	// (Result, Log) during dispatch and those changes get overwritten when we
+	// write the stale in-memory doc back to disk after agent-mux returns.
 	doc.Card.Status = result.To
 	doc.Card.Profile = stringPtr(resolvedOpts.Profile)
 	doc.Card.Engine = stringPtr(resolvedOpts.Engine)
@@ -161,12 +155,53 @@ func dispatchTicket(baseDir, id string, d dispatch.Dispatcher, cfg config.Config
 	} else {
 		doc.Card.Effort = nil
 	}
-	doc.Card.DispatchID = &dispatchResult.DispatchID
-	doc.Card.SessionID = &dispatchResult.SessionID
 
-	appendLog(doc, fmt.Sprintf("dispatched -- %s/%s/%s dispatch_id=%s session_id=%s profile=%s", valueOrBlank(doc.Card.Engine), valueOrBlank(doc.Card.Model), valueOrBlank(doc.Card.Effort), dispatchResult.DispatchID, dispatchResult.SessionID, resolvedOpts.Profile))
+	appendLog(doc, fmt.Sprintf("dispatched -- %s/%s/%s profile=%s", valueOrBlank(doc.Card.Engine), valueOrBlank(doc.Card.Model), valueOrBlank(doc.Card.Effort), resolvedOpts.Profile))
 
 	if err := doc.WriteFile(path); err != nil {
+		return nil, err
+	}
+
+	// Phase 2: Call agent-mux. The worker may modify the card file on disk
+	// during this call (writing Result, Log entries, etc.).
+	dispatchResult, err := d.Dispatch(dispatch.DispatchOptions{
+		Profile:    resolvedOpts.Profile,
+		Engine:     resolvedOpts.Engine,
+		Model:      resolvedOpts.Model,
+		Effort:     resolvedOpts.Effort,
+		WorkDir:    resolvedOpts.WorkDir,
+		TicketPath: absPath,
+		Preamble:   preamble,
+		Skills:     resolvedOpts.Skills,
+	})
+	if err != nil {
+		// Rollback: agent-mux dispatch failed, restore the card to open.
+		// Re-read from disk (Phase 1 already wrote to it) and reset status.
+		if _, rollDoc, loadErr := loadTicket(baseDir, id); loadErr == nil {
+			rollDoc.Card.Status = frontmatter.StatusOpen
+			clearDispatchFields(&rollDoc.Card)
+			appendLog(rollDoc, fmt.Sprintf("rollback -- dispatch failed: %v", err))
+			_ = rollDoc.WriteFile(path)
+		}
+		return nil, err
+	}
+
+	// Phase 3: Re-read the card from disk and patch only dispatch_id.
+	// session_id is not available from --async dispatch (session not yet
+	// created); reconcile backfills it later. Re-reading preserves any
+	// body changes (Result, Log) the worker wrote during Phase 2.
+	_, postDoc, err := loadTicket(baseDir, id)
+	if err != nil {
+		return nil, fmt.Errorf("re-read ticket after dispatch: %w", err)
+	}
+	postDoc.Card.DispatchID = &dispatchResult.DispatchID
+	if dispatchResult.SessionID != "" {
+		postDoc.Card.SessionID = &dispatchResult.SessionID
+	}
+
+	appendLog(postDoc, fmt.Sprintf("dispatch_id=%s session_id=%s", dispatchResult.DispatchID, dispatchResult.SessionID))
+
+	if err := postDoc.WriteFile(path); err != nil {
 		return nil, err
 	}
 

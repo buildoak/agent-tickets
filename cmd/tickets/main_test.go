@@ -824,6 +824,102 @@ func TestDispatchWorkDirCLIOverridesCard(t *testing.T) {
 	mustRun(t, "dispatch", id, "--cwd", "/cli/override")
 }
 
+func TestDispatchDoesNotClobberWorkerWrites(t *testing.T) {
+	// Regression test for the dispatch race condition: the worker writes
+	// Result and Log entries to the card file on disk while agent-mux
+	// blocks. After agent-mux returns, dispatch must NOT overwrite those
+	// changes with its stale in-memory copy.
+	baseDir := t.TempDir()
+	t.Setenv("TICKETS_BASE_DIR", baseDir)
+
+	const workerResult = "The worker produced this result.\n"
+	const workerLog = "- 2026-01-01T00:00:00Z worker -- finished task\n"
+
+	withMockDispatcher(t, &dispatch.MockDispatcher{
+		DispatchFunc: func(opts dispatch.DispatchOptions) (*dispatch.DispatchResult, error) {
+			// Simulate a fast worker: during dispatch, modify the card
+			// file on disk — writing Result and appending to Log.
+			doc, err := frontmatter.ParseFile(opts.TicketPath)
+			if err != nil {
+				return nil, fmt.Errorf("worker read card: %w", err)
+			}
+			doc.SetSection("Result", workerResult)
+			doc.AppendToSection("Log", workerLog)
+			if err := doc.WriteFile(opts.TicketPath); err != nil {
+				return nil, fmt.Errorf("worker write card: %w", err)
+			}
+			return &dispatch.DispatchResult{DispatchID: "race-dispatch-1", SessionID: "race-session-1"}, nil
+		},
+	})
+
+	mustRun(t, "init", "ALPHA", "--title", "Alpha")
+	id := strings.TrimSpace(mustRunStdout(t, "create", "--initiative", "ALPHA", "--title", "Race condition", "--tier", "worker"))
+
+	mustRun(t, "dispatch", id, "--engine", "codex", "--model", "gpt-5.4", "--effort", "high")
+
+	doc := mustParseTicket(t, baseDir, id)
+
+	// The worker's Result must survive the post-dispatch write.
+	gotResult := doc.GetSection("Result")
+	if !strings.Contains(gotResult, "The worker produced this result.") {
+		t.Fatalf("worker Result was clobbered by dispatch; got:\n%s", gotResult)
+	}
+
+	// The worker's Log entry must survive the post-dispatch write.
+	gotLog := doc.GetSection("Log")
+	if !strings.Contains(gotLog, "worker -- finished task") {
+		t.Fatalf("worker Log entry was clobbered by dispatch; got:\n%s", gotLog)
+	}
+
+	// Dispatch metadata must still be present.
+	if doc.Card.Status != frontmatter.StatusDispatched {
+		t.Fatalf("unexpected status: %s", doc.Card.Status)
+	}
+	if doc.Card.DispatchID == nil || *doc.Card.DispatchID != "race-dispatch-1" {
+		t.Fatalf("unexpected dispatch_id: %#v", doc.Card.DispatchID)
+	}
+}
+
+func TestDispatchRollsBackOnFailure(t *testing.T) {
+	// When agent-mux dispatch fails, the card must be rolled back to open
+	// status so it can be retried.
+	baseDir := t.TempDir()
+	t.Setenv("TICKETS_BASE_DIR", baseDir)
+
+	withMockDispatcher(t, &dispatch.MockDispatcher{
+		DispatchFunc: func(opts dispatch.DispatchOptions) (*dispatch.DispatchResult, error) {
+			return nil, fmt.Errorf("agent-mux exploded")
+		},
+	})
+
+	mustRun(t, "init", "ALPHA", "--title", "Alpha")
+	id := strings.TrimSpace(mustRunStdout(t, "create", "--initiative", "ALPHA", "--title", "Rollback test", "--tier", "worker"))
+
+	// Add scope manually (run() doesn't call makeDispatchCommandsReady).
+	doc := mustParseTicket(t, baseDir, id)
+	doc.SetSection("Scope", "Test scope for rollback.\n")
+	writeTicket(t, baseDir, id, doc)
+
+	err := run([]string{"dispatch", id, "--engine", "codex", "--model", "gpt-5.4"})
+	if err == nil {
+		t.Fatal("expected dispatch error, got nil")
+	}
+
+	doc = mustParseTicket(t, baseDir, id)
+	if doc.Card.Status != frontmatter.StatusOpen {
+		t.Fatalf("expected status open after failed dispatch, got %s", doc.Card.Status)
+	}
+	if doc.Card.DispatchID != nil {
+		t.Fatalf("expected nil dispatch_id after rollback, got %q", *doc.Card.DispatchID)
+	}
+
+	// Log should record the rollback.
+	gotLog := doc.GetSection("Log")
+	if !strings.Contains(gotLog, "rollback -- dispatch failed") {
+		t.Fatalf("expected rollback log entry, got:\n%s", gotLog)
+	}
+}
+
 func TestCompletePopulatesTokens(t *testing.T) {
 	baseDir := t.TempDir()
 	t.Setenv("TICKETS_BASE_DIR", baseDir)
