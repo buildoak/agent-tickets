@@ -1692,6 +1692,93 @@ func TestCreateAcceptsDependencyChainDepthThree(t *testing.T) {
 	}
 }
 
+func TestCreateSkipsExistingFiles(t *testing.T) {
+	baseDir := t.TempDir()
+	t.Setenv("TICKETS_BASE_DIR", baseDir)
+
+	mustRun(t, "init", "ALPHA", "--title", "Alpha")
+
+	// Create ticket 001 normally.
+	id1 := strings.TrimSpace(mustRunStdout(t, "create", "--initiative", "ALPHA", "--title", "First", "--tier", "worker"))
+	if id1 != "ALPHA-001" {
+		t.Fatalf("expected ALPHA-001, got %s", id1)
+	}
+
+	// Manually plant a file at ALPHA-002 (simulating an external/manual creation
+	// that the counter doesn't know about).
+	manualPath := filepath.Join(baseDir, "cards", "ALPHA", "ALPHA-002.md")
+	if err := os.WriteFile(manualPath, []byte("---\nid: ALPHA-002\n---\n"), 0o644); err != nil {
+		t.Fatalf("write manual ticket: %v", err)
+	}
+
+	// Next create should skip 002 and produce 003.
+	id2 := strings.TrimSpace(mustRunStdout(t, "create", "--initiative", "ALPHA", "--title", "Second", "--tier", "worker"))
+	if id2 != "ALPHA-003" {
+		t.Fatalf("expected ALPHA-003 (skipping existing 002), got %s", id2)
+	}
+
+	// Verify the manually created file was NOT overwritten.
+	data, err := os.ReadFile(manualPath)
+	if err != nil {
+		t.Fatalf("read manual ticket: %v", err)
+	}
+	if !strings.Contains(string(data), "id: ALPHA-002") {
+		t.Fatalf("manual ticket was overwritten")
+	}
+
+	// Also plant files at 004 and 005 to test skipping a gap.
+	for _, seq := range []string{"004", "005"} {
+		p := filepath.Join(baseDir, "cards", "ALPHA", "ALPHA-"+seq+".md")
+		if err := os.WriteFile(p, []byte("---\nid: ALPHA-"+seq+"\n---\n"), 0o644); err != nil {
+			t.Fatalf("write manual ticket %s: %v", seq, err)
+		}
+	}
+
+	id3 := strings.TrimSpace(mustRunStdout(t, "create", "--initiative", "ALPHA", "--title", "Third", "--tier", "worker"))
+	if id3 != "ALPHA-006" {
+		t.Fatalf("expected ALPHA-006 (skipping existing 004,005), got %s", id3)
+	}
+}
+
+func TestCreateRefusesOverwriteOnRace(t *testing.T) {
+	// Even if nextSequence returns an ID that somehow collides (e.g. TOCTOU),
+	// the file-existence guard in cmdCreate must reject the write.
+	baseDir := t.TempDir()
+	t.Setenv("TICKETS_BASE_DIR", baseDir)
+
+	mustRun(t, "init", "BETA", "--title", "Beta")
+
+	// Create ticket 001 normally.
+	id1 := strings.TrimSpace(mustRunStdout(t, "create", "--initiative", "BETA", "--title", "First", "--tier", "worker"))
+	if id1 != "BETA-001" {
+		t.Fatalf("expected BETA-001, got %s", id1)
+	}
+
+	// Manually place a file at the path that create would target next (002),
+	// but also create 001 as the only glob-visible file so nextSequence
+	// would normally return 002 — except the skip loop sees 002 exists.
+	collidePath := filepath.Join(baseDir, "cards", "BETA", "BETA-002.md")
+	original := []byte("---\nid: BETA-002\ntitle: Important work\nstatus: dispatched\n---\nReal content\n")
+	if err := os.WriteFile(collidePath, original, 0o644); err != nil {
+		t.Fatalf("write colliding ticket: %v", err)
+	}
+
+	// Create should skip to 003, not overwrite 002.
+	id2 := strings.TrimSpace(mustRunStdout(t, "create", "--initiative", "BETA", "--title", "New", "--tier", "worker"))
+	if id2 != "BETA-003" {
+		t.Fatalf("expected BETA-003, got %s", id2)
+	}
+
+	// Confirm the original file at 002 is untouched.
+	data, err := os.ReadFile(collidePath)
+	if err != nil {
+		t.Fatalf("read colliding ticket: %v", err)
+	}
+	if string(data) != string(original) {
+		t.Fatalf("colliding ticket was modified:\n%s", string(data))
+	}
+}
+
 func mustRun(t *testing.T, args ...string) {
 	t.Helper()
 	makeDispatchCommandsReady(t, args...)

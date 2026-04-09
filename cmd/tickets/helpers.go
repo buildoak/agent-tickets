@@ -116,7 +116,21 @@ func nextSequence(initiativeDir, initiative string) (int, error) {
 		}
 	}
 
-	return maxSeq + 1, nil
+	// Advance past any existing files that the glob may have missed
+	// (e.g. manually created tickets, restored backups, case mismatches).
+	next := maxSeq + 1
+	for {
+		candidate := fmt.Sprintf("%s-%03d", initiative, next)
+		path := filepath.Join(initiativeDir, candidate+".md")
+		if _, err := os.Stat(path); os.IsNotExist(err) {
+			break
+		} else if err != nil {
+			return 0, err
+		}
+		next++
+	}
+
+	return next, nil
 }
 
 func parseTicketID(id string) (initiative string, seq int, err error) {
