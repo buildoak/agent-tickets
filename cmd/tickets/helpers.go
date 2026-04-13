@@ -98,17 +98,27 @@ func findTicketFile(baseDir, id string) (string, error) {
 }
 
 func nextSequence(initiativeDir, initiative string) (int, error) {
-	pattern := filepath.Join(initiativeDir, initiative+"-*.md")
-	matches, err := filepath.Glob(pattern)
+	entries, err := os.ReadDir(initiativeDir)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return 1, nil
+		}
 		return 0, err
 	}
 
+	prefix := strings.ToUpper(initiative) + "-"
 	maxSeq := 0
-	for _, match := range matches {
-		base := strings.TrimSuffix(filepath.Base(match), ".md")
-		_, seq, err := parseTicketID(base)
-		if err != nil {
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := strings.ToUpper(strings.TrimSuffix(entry.Name(), ".md"))
+		if !strings.HasPrefix(name, prefix) {
+			continue
+		}
+		seqStr := strings.TrimPrefix(name, prefix)
+		var seq int
+		if _, err := fmt.Sscanf(seqStr, "%d", &seq); err != nil {
 			continue
 		}
 		if seq > maxSeq {
@@ -116,21 +126,7 @@ func nextSequence(initiativeDir, initiative string) (int, error) {
 		}
 	}
 
-	// Advance past any existing files that the glob may have missed
-	// (e.g. manually created tickets, restored backups, case mismatches).
-	next := maxSeq + 1
-	for {
-		candidate := fmt.Sprintf("%s-%03d", initiative, next)
-		path := filepath.Join(initiativeDir, candidate+".md")
-		if _, err := os.Stat(path); os.IsNotExist(err) {
-			break
-		} else if err != nil {
-			return 0, err
-		}
-		next++
-	}
-
-	return next, nil
+	return maxSeq + 1, nil
 }
 
 func parseTicketID(id string) (initiative string, seq int, err error) {
@@ -239,11 +235,12 @@ func appendLog(doc *frontmatter.Document, line string) {
 
 func clearDispatchFields(card *frontmatter.Card) {
 	// Only clear ephemeral dispatch-runtime fields.
-	// Card-spec fields (engine, model, effort, profile, work_dir, skills)
-	// are intentionally preserved — they define HOW the ticket should be
-	// dispatched on retry and are set by the user or dispatch-ready logic.
+	// Card-spec fields (engine, model, effort, profile) are intentionally
+	// preserved — they define HOW the ticket should be dispatched on retry
+	// and are set by the user or dispatch-ready logic.
 	card.DispatchID = nil
 	card.SessionID = nil
+	card.DispatchedAt = nil
 }
 
 func ticketTemplate(card frontmatter.Card) *frontmatter.Document {
@@ -400,30 +397,68 @@ func detectCycle(graph map[string][]string, start string) []string {
 }
 
 func maxDependencyDepth(graph map[string][]string, node string, path []string) (int, []string) {
-	return maxDependencyDepthVisited(graph, node, path, make(map[string]bool))
+	cache := make(map[string]depthResult)
+	active := make(map[string]bool)
+	return maxDependencyDepthVisited(graph, node, path, active, cache)
 }
 
-func maxDependencyDepthVisited(graph map[string][]string, node string, path []string, visited map[string]bool) (int, []string) {
-	if visited[node] {
-		return len(path), append([]string(nil), path...)
-	}
-	visited[node] = true
+type depthResult struct {
+	depth int
+	chain []string
+}
 
-	path = append(path, node)
+func maxDependencyDepthVisited(graph map[string][]string, node string, path []string, active map[string]bool, cache map[string]depthResult) (int, []string) {
+	if cached, ok := cache[node]; ok {
+		chain := append(append([]string(nil), path...), cached.chain...)
+		return len(path) + cached.depth, chain
+	}
+	if active[node] {
+		chain := append(append([]string(nil), path...), node)
+		return len(chain), chain
+	}
+
+	active[node] = true
+	defer delete(active, node)
+
+	basePath := append([]string(nil), path...)
+	path = append(basePath, node)
 	deps := graph[node]
 	if len(deps) == 0 {
+		cache[node] = depthResult{depth: 1, chain: []string{node}}
 		return len(path), append([]string(nil), path...)
 	}
 
 	maxDepth := len(path)
 	longest := append([]string(nil), path...)
 	for _, dep := range deps {
-		depth, chain := maxDependencyDepthVisited(graph, dep, path, visited)
+		depth, chain := maxDependencyDepthVisited(graph, dep, path, active, cache)
 		if depth > maxDepth {
 			maxDepth = depth
 			longest = chain
 		}
 	}
 
+	cache[node] = depthResult{
+		depth: maxDepth - len(basePath),
+		chain: append([]string(nil), longest[len(basePath):]...),
+	}
 	return maxDepth, longest
+}
+
+func shouldAutoBlock(attempts, maxRetry int) bool {
+	if maxRetry <= 0 {
+		maxRetry = 3
+	}
+	return attempts+1 >= maxRetry
+}
+
+// hasTag checks whether target is present in the tags slice.
+// Shared utility used by list.go (tag filter) and stall.go (stall-audit tag check).
+func hasTag(tags []string, target string) bool {
+	for _, tag := range tags {
+		if tag == target {
+			return true
+		}
+	}
+	return false
 }

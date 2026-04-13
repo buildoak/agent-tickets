@@ -18,7 +18,7 @@ func TestMockDispatcherDefaults(t *testing.T) {
 		t.Fatalf("Dispatch() error = %v", err)
 	}
 
-	if want := (&DispatchResult{DispatchID: "mock-dispatch-id", SessionID: "mock-session-id"}); !reflect.DeepEqual(dispatchResult, want) {
+	if want := (&DispatchResult{DispatchID: "mock-dispatch-id"}); !reflect.DeepEqual(dispatchResult, want) {
 		t.Fatalf("Dispatch() = %#v, want %#v", dispatchResult, want)
 	}
 
@@ -41,6 +41,7 @@ func TestMockDispatcherCustomDispatchFunc(t *testing.T) {
 		Model:      "gpt-5",
 		Effort:     "high",
 		WorkDir:    "/tmp",
+		Skills:     []string{"ticket-work", "web-search"},
 		TicketPath: "/tmp/ticket.md",
 		Preamble:   "retry context",
 	}
@@ -108,7 +109,7 @@ func TestMockDispatcherCustomStatusFunc(t *testing.T) {
 func TestShellDispatcherDispatchBuildsArgs(t *testing.T) {
 	t.Parallel()
 
-	dispatcher := NewShellDispatcher("", "")
+	dispatcher := NewShellDispatcher("")
 
 	args, contextFile, err := dispatcher.dispatchArgs(DispatchOptions{
 		Profile:    "default",
@@ -116,6 +117,7 @@ func TestShellDispatcherDispatchBuildsArgs(t *testing.T) {
 		Model:      "gpt-5.4",
 		Effort:     "medium",
 		WorkDir:    "/tmp/worktree",
+		Skills:     []string{"ticket-work", "web-search"},
 		TicketPath: "/tmp/ticket.md",
 		Preamble:   "retry context",
 	})
@@ -137,6 +139,8 @@ func TestShellDispatcherDispatchBuildsArgs(t *testing.T) {
 		"--engine", "codex",
 		"--model", "gpt-5.4",
 		"--effort", "medium",
+		"--skill", "ticket-work",
+		"--skill", "web-search",
 	}
 
 	if !reflect.DeepEqual(args, want) {
@@ -151,108 +155,176 @@ func TestShellDispatcherDispatchBuildsArgs(t *testing.T) {
 	}
 }
 
+func TestShouldPassEngineFlagsBackwardCompat(t *testing.T) {
+	t.Parallel()
+
+	// No source tracking (zero values) → always pass engine flags.
+	if !ShouldPassEngineFlags(DispatchOptions{Engine: "codex"}) {
+		t.Fatal("expected engine flags to pass with no source tracking")
+	}
+}
+
+func TestShouldPassEngineFlagsCLIEngine(t *testing.T) {
+	t.Parallel()
+
+	// Engine explicitly set from CLI → always pass.
+	if !ShouldPassEngineFlags(DispatchOptions{
+		Engine:        "claude",
+		EngineSource:  SourceCLI,
+		ProfileSource: SourceInitiative,
+	}) {
+		t.Fatal("expected engine flags to pass when engine from CLI")
+	}
+}
+
+func TestShouldPassEngineFlagsCardEngine(t *testing.T) {
+	t.Parallel()
+
+	// Engine from card frontmatter → always pass.
+	if !ShouldPassEngineFlags(DispatchOptions{
+		Engine:        "gemini",
+		EngineSource:  SourceCard,
+		ProfileSource: SourceInitiative,
+	}) {
+		t.Fatal("expected engine flags to pass when engine from card")
+	}
+}
+
+func TestShouldPassEngineFlagsConfigEngineWithInitProfile(t *testing.T) {
+	t.Parallel()
+
+	// Engine from config defaults, profile from initiative → omit engine flags.
+	if ShouldPassEngineFlags(DispatchOptions{
+		Engine:        "codex",
+		EngineSource:  SourceConfig,
+		ProfileSource: SourceInitiative,
+	}) {
+		t.Fatal("expected engine flags to be omitted when engine from config and profile from initiative")
+	}
+}
+
+func TestShouldPassEngineFlagsConfigEngineWithCardProfile(t *testing.T) {
+	t.Parallel()
+
+	// Engine from config defaults, profile from card → omit engine flags.
+	if ShouldPassEngineFlags(DispatchOptions{
+		Engine:        "codex",
+		EngineSource:  SourceConfig,
+		ProfileSource: SourceCard,
+	}) {
+		t.Fatal("expected engine flags to be omitted when engine from config and profile from card")
+	}
+}
+
+func TestShouldPassEngineFlagsConfigEngineWithConfigProfile(t *testing.T) {
+	t.Parallel()
+
+	// Both engine and profile from config → pass engine flags.
+	if !ShouldPassEngineFlags(DispatchOptions{
+		Engine:        "codex",
+		EngineSource:  SourceConfig,
+		ProfileSource: SourceConfig,
+	}) {
+		t.Fatal("expected engine flags to pass when both from config")
+	}
+}
+
+func TestDispatchArgsOmitsEngineFlagsWhenProfileFromInitiative(t *testing.T) {
+	t.Parallel()
+
+	dispatcher := NewShellDispatcher("")
+
+	args, contextFile, err := dispatcher.dispatchArgs(DispatchOptions{
+		Profile:       "paper-ops-worker",
+		Engine:        "codex",
+		Model:         "gpt-5.4-mini",
+		Effort:        "xhigh",
+		WorkDir:       "/tmp/worktree",
+		TicketPath:    "/tmp/ticket.md",
+		ProfileSource: SourceInitiative,
+		EngineSource:  SourceConfig,
+		ModelSource:   SourceConfig,
+		EffortSource:  SourceConfig,
+	})
+	if err != nil {
+		t.Fatalf("dispatchArgs() error = %v", err)
+	}
+	if contextFile != "" {
+		os.Remove(contextFile)
+	}
+
+	// Engine/model/effort flags should NOT appear.
+	for _, flag := range []string{"--engine", "--model", "--effort"} {
+		for _, arg := range args {
+			if arg == flag {
+				t.Fatalf("dispatchArgs() should not contain %s when engine from config and profile from initiative, got: %v", flag, args)
+			}
+		}
+	}
+
+	// Profile flag should still appear.
+	foundProfile := false
+	for i, arg := range args {
+		if arg == "--profile" && i+1 < len(args) && args[i+1] == "paper-ops-worker" {
+			foundProfile = true
+			break
+		}
+	}
+	if !foundProfile {
+		t.Fatalf("dispatchArgs() missing --profile paper-ops-worker, got: %v", args)
+	}
+}
+
+func TestDispatchArgsPassesEngineFlagsWhenFromCLI(t *testing.T) {
+	t.Parallel()
+
+	dispatcher := NewShellDispatcher("")
+
+	args, contextFile, err := dispatcher.dispatchArgs(DispatchOptions{
+		Profile:       "paper-ops-worker",
+		Engine:        "claude",
+		Model:         "opus",
+		Effort:        "high",
+		WorkDir:       "/tmp/worktree",
+		TicketPath:    "/tmp/ticket.md",
+		ProfileSource: SourceInitiative,
+		EngineSource:  SourceCLI,
+		ModelSource:   SourceCLI,
+		EffortSource:  SourceCLI,
+	})
+	if err != nil {
+		t.Fatalf("dispatchArgs() error = %v", err)
+	}
+	if contextFile != "" {
+		os.Remove(contextFile)
+	}
+
+	// Engine/model/effort flags SHOULD appear when from CLI.
+	want := map[string]string{"--engine": "claude", "--model": "opus", "--effort": "high"}
+	for flag, val := range want {
+		found := false
+		for i, arg := range args {
+			if arg == flag && i+1 < len(args) && args[i+1] == val {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("dispatchArgs() missing %s %s, got: %v", flag, val, args)
+		}
+	}
+}
+
 func TestShellDispatcherStatusBuildsArgs(t *testing.T) {
 	t.Parallel()
 
-	dispatcher := NewShellDispatcher("", "")
+	dispatcher := NewShellDispatcher("")
 
 	args := dispatcher.statusArgs("dispatch-123")
 	want := []string{"status", "dispatch-123", "--json"}
 
 	if !reflect.DeepEqual(args, want) {
 		t.Fatalf("statusArgs() = %#v, want %#v", args, want)
-	}
-}
-
-func TestShellDispatcherDispatchBuildsArgsWithSkills(t *testing.T) {
-	t.Parallel()
-
-	dispatcher := NewShellDispatcher("", "")
-
-	args, contextFile, err := dispatcher.dispatchArgs(DispatchOptions{
-		Profile:    "default",
-		Engine:     "codex",
-		Model:      "gpt-5.4",
-		TicketPath: "/tmp/ticket.md",
-		Skills:     []string{"web-search", "code-review"},
-	})
-	if err != nil {
-		t.Fatalf("dispatchArgs() error = %v", err)
-	}
-	if contextFile != "" {
-		defer os.Remove(contextFile)
-	}
-
-	want := []string{
-		"dispatch",
-		"--async",
-		"--profile", "default",
-		"--prompt-file", "/tmp/ticket.md",
-		"--engine", "codex",
-		"--model", "gpt-5.4",
-		"--skill", "web-search",
-		"--skill", "code-review",
-	}
-
-	if !reflect.DeepEqual(args, want) {
-		t.Fatalf("dispatchArgs() = %#v, want %#v", args, want)
-	}
-}
-
-func TestShellDispatcherDispatchOmitsCwdWhenEmpty(t *testing.T) {
-	t.Parallel()
-
-	dispatcher := NewShellDispatcher("", "")
-
-	args, contextFile, err := dispatcher.dispatchArgs(DispatchOptions{
-		Profile:    "default",
-		Engine:     "codex",
-		Model:      "gpt-5.4",
-		TicketPath: "/tmp/ticket.md",
-		WorkDir:    "",
-	})
-	if err != nil {
-		t.Fatalf("dispatchArgs() error = %v", err)
-	}
-	if contextFile != "" {
-		defer os.Remove(contextFile)
-	}
-
-	for i, arg := range args {
-		if arg == "--cwd" {
-			t.Fatalf("dispatchArgs() should not contain --cwd when WorkDir is empty, found at index %d: %#v", i, args)
-		}
-	}
-}
-
-func TestShellDispatcherDispatchPassesCwd(t *testing.T) {
-	t.Parallel()
-
-	dispatcher := NewShellDispatcher("", "")
-
-	args, contextFile, err := dispatcher.dispatchArgs(DispatchOptions{
-		Profile:    "default",
-		Engine:     "codex",
-		Model:      "gpt-5.4",
-		TicketPath: "/tmp/ticket.md",
-		WorkDir:    "/home/user/project",
-	})
-	if err != nil {
-		t.Fatalf("dispatchArgs() error = %v", err)
-	}
-	if contextFile != "" {
-		defer os.Remove(contextFile)
-	}
-
-	found := false
-	for i, arg := range args {
-		if arg == "--cwd" && i+1 < len(args) && args[i+1] == "/home/user/project" {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Fatalf("dispatchArgs() should contain --cwd /home/user/project: %#v", args)
 	}
 }
 
@@ -265,65 +337,12 @@ func TestShellDispatcherRunJSONIncludesStderr(t *testing.T) {
 		t.Fatalf("write script: %v", err)
 	}
 
-	dispatcher := NewShellDispatcher(script, "")
+	dispatcher := NewShellDispatcher(script)
 	err := dispatcher.runJSON([]string{"status", "dispatch-123", "--json"}, dir, &StatusResult{})
 	if err == nil {
 		t.Fatal("runJSON() error = nil, want non-nil")
 	}
 	if !strings.Contains(err.Error(), "backend exploded") {
 		t.Fatalf("runJSON() error = %q, want stderr text", err)
-	}
-}
-
-func TestShellDispatcherSkillPathInjectsEnv(t *testing.T) {
-	t.Parallel()
-
-	dir := t.TempDir()
-	// Script prints AGENT_MUX_SKILL_PATH from its environment as JSON so
-	// runJSON can parse it. This proves the env var reached the subprocess.
-	script := filepath.Join(dir, "agent-mux.sh")
-	if err := os.WriteFile(script, []byte(
-		"#!/bin/sh\nprintf '{\"skill_path\":\"%s\"}' \"$AGENT_MUX_SKILL_PATH\"\n",
-	), 0o755); err != nil {
-		t.Fatalf("write script: %v", err)
-	}
-
-	const wantPath = "/a/skills:/b/skills"
-	dispatcher := NewShellDispatcher(script, wantPath)
-
-	var result struct {
-		SkillPath string `json:"skill_path"`
-	}
-	if err := dispatcher.runJSON([]string{}, "", &result); err != nil {
-		t.Fatalf("runJSON() error = %v", err)
-	}
-	if result.SkillPath != wantPath {
-		t.Fatalf("AGENT_MUX_SKILL_PATH = %q, want %q", result.SkillPath, wantPath)
-	}
-}
-
-func TestShellDispatcherNoSkillPathLeavesEnvNil(t *testing.T) {
-	t.Parallel()
-
-	// When SkillPath is empty, cmd.Env should remain nil (inherit parent env).
-	// We verify by checking that the script sees the parent's env unchanged.
-	dir := t.TempDir()
-	script := filepath.Join(dir, "agent-mux.sh")
-	if err := os.WriteFile(script, []byte(
-		"#!/bin/sh\nprintf '{\"home\":\"%s\"}' \"$HOME\"\n",
-	), 0o755); err != nil {
-		t.Fatalf("write script: %v", err)
-	}
-
-	dispatcher := NewShellDispatcher(script, "")
-
-	var result struct {
-		Home string `json:"home"`
-	}
-	if err := dispatcher.runJSON([]string{}, "", &result); err != nil {
-		t.Fatalf("runJSON() error = %v", err)
-	}
-	if result.Home == "" {
-		t.Fatal("subprocess did not inherit parent HOME; cmd.Env may have been incorrectly set")
 	}
 }

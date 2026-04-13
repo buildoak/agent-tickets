@@ -62,6 +62,7 @@ func reconcileTickets(baseDir string, dryRun bool) (int, error) {
 		switch doc.Card.Status {
 		case frontmatter.StatusDispatched:
 			if doc.Card.DispatchID == nil {
+				fmt.Fprintf(stderr, "warning: dispatch_id missing on dispatched card %s, skipping reconcile\n", doc.Card.ID)
 				continue
 			}
 
@@ -82,23 +83,54 @@ func reconcileTickets(baseDir string, dryRun bool) (int, error) {
 					continue
 				}
 				appendLog(doc, "warning -- "+message)
-				action, failErr := failDuringReconcile(file, doc, cfg, fmt.Sprintf("agent-mux status query failed repeatedly: %v", err), "failed -- "+message)
+				appendLog(doc, "note -- auto-failed due to status-check infrastructure failure, not confirmed worker failure")
+				action, failErr := failDuringReconcile(file, doc, nil, fmt.Sprintf("agent-mux status query failed repeatedly: %v", err), "failed -- "+message)
 				if failErr != nil {
 					return 0, failErr
 				}
 				actions = append(actions, action)
+				fmt.Fprintf(stdout, "[STALL_WARNING] %s auto-failed due to status-check failure (infrastructure may be degraded)\n", doc.Card.ID)
 				continue
 			}
 
-			action, err := reconcileDispatchedTicket(file, doc, statusResult, cfg, dryRun)
+			// Backfill session_id when the status response provides one
+			// but the card doesn't have it yet (agent-mux --async only
+			// returns dispatch_id; session_id becomes available later).
+			sessionBackfilled := false
+			if statusResult.SessionID != "" && (doc.Card.SessionID == nil || *doc.Card.SessionID == "") {
+				if dryRun {
+					actions = append(actions, fmt.Sprintf("Would backfill session_id for %s", doc.Card.ID))
+				} else {
+					doc.Card.SessionID = stringPtr(statusResult.SessionID)
+					sessionBackfilled = true
+				}
+			}
+
+			action, err := reconcileDispatchedTicket(file, doc, statusResult, dryRun)
 			if err != nil {
 				return 0, err
 			}
 			if action != "" {
 				actions = append(actions, action)
 			}
-		case frontmatter.StatusDone:
-			if doc.Card.DispatchID == nil || doc.Card.Tokens != nil {
+
+			// If we backfilled session_id but the ticket is still running
+			// (no state transition wrote the file), persist the update now.
+			if sessionBackfilled && action == "" {
+				if err := doc.WriteFile(file); err != nil {
+					return 0, err
+				}
+				actions = append(actions, fmt.Sprintf("%s: backfilled session_id", doc.Card.ID))
+			}
+		case frontmatter.StatusDone, frontmatter.StatusFailed:
+			if doc.Card.DispatchID == nil {
+				// Legacy card completed before dispatch tracking existed; skip silently.
+				continue
+			}
+
+			needsTokens := doc.Card.Tokens == nil
+			needsSession := doc.Card.SessionID == nil || *doc.Card.SessionID == ""
+			if !needsTokens && !needsSession {
 				continue
 			}
 
@@ -106,20 +138,29 @@ func reconcileTickets(baseDir string, dryRun bool) (int, error) {
 			if err != nil {
 				continue
 			}
-			if statusResult.Tokens == nil {
+
+			var filled []string
+			if needsTokens && statusResult.Tokens != nil {
+				doc.Card.Tokens = tokenUsage(statusResult.Tokens)
+				filled = append(filled, "tokens")
+			}
+			if needsSession && statusResult.SessionID != "" {
+				doc.Card.SessionID = stringPtr(statusResult.SessionID)
+				filled = append(filled, "session_id")
+			}
+			if len(filled) == 0 {
 				continue
 			}
 
 			if dryRun {
-				actions = append(actions, fmt.Sprintf("Would backfill tokens for %s", doc.Card.ID))
+				actions = append(actions, fmt.Sprintf("Would backfill %s for %s", strings.Join(filled, ", "), doc.Card.ID))
 				continue
 			}
 
-			doc.Card.Tokens = tokenUsage(statusResult.Tokens)
 			if err := doc.WriteFile(file); err != nil {
 				return 0, err
 			}
-			actions = append(actions, fmt.Sprintf("%s: backfilled tokens", doc.Card.ID))
+			actions = append(actions, fmt.Sprintf("%s: backfilled %s", doc.Card.ID, strings.Join(filled, ", ")))
 		}
 	}
 
@@ -135,24 +176,39 @@ func reconcileTickets(baseDir string, dryRun bool) (int, error) {
 	return len(actions), nil
 }
 
-func reconcileDispatchedTicket(file string, doc *frontmatter.Document, statusResult *dispatch.StatusResult, cfg config.Config, dryRun bool) (string, error) {
-	switch statusResult.Status {
+// hasSubstantialResult checks whether the card's ## Result section contains
+// meaningful content (>50 non-whitespace characters, not a placeholder).
+func hasSubstantialResult(doc *frontmatter.Document) bool {
+	raw := doc.GetSection("Result")
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" || isPlaceholder(trimmed) {
+		return false
+	}
+	// Count non-whitespace characters.
+	count := 0
+	for _, r := range trimmed {
+		if r != ' ' && r != '\t' && r != '\n' && r != '\r' {
+			count++
+		}
+	}
+	return count > 50
+}
+
+func reconcileDispatchedTicket(file string, doc *frontmatter.Document, statusResult *dispatch.StatusResult, dryRun bool) (string, error) {
+	hasResult := hasSubstantialResult(doc)
+
+	switch statusResult.EffectiveStatus() {
 	case "running":
 		return "", nil
 	case "completed":
-		resultText := strings.TrimSpace(doc.GetSection("Result"))
-		if resultText == "" || isPlaceholder(resultText) {
-			reason := "worker completed but no result found in ticket; check worker output paths"
-			if resultText != "" {
-				reason = "worker completed but result section still contains placeholder text; check worker output paths"
-			}
+		if !hasResult {
+			// Agent-mux says completed but the worker never wrote a Result.
+			reason := "worker completed without writing Result"
 			if dryRun {
 				return fmt.Sprintf("Would fail %s: %s", doc.Card.ID, reason), nil
 			}
-			appendLog(doc, "warning -- "+reason)
-			return failDuringReconcile(file, doc, cfg, reason, "failed -- "+reason)
+			return failDuringReconcile(file, doc, statusResult, reason, "failed -- "+reason)
 		}
-
 		if dryRun {
 			return fmt.Sprintf("Would complete %s via reconcile", doc.Card.ID), nil
 		}
@@ -162,18 +218,36 @@ func reconcileDispatchedTicket(file string, doc *frontmatter.Document, statusRes
 			return "", err
 		}
 		doc.Card.Status = result.To
+		backfillStatusFields(doc, statusResult)
 		if statusResult.Tokens != nil {
 			doc.Card.Tokens = tokenUsage(statusResult.Tokens)
 		}
 		appendLog(doc, "done -- completed via reconcile (agent didn't call tickets complete)")
-		if doc.Card.Tokens != nil {
-			appendLog(doc, fmt.Sprintf("tokens -- in=%d out=%d cache=%d peak_context=%d", doc.Card.Tokens.In, doc.Card.Tokens.Out, doc.Card.Tokens.Cache, doc.Card.Tokens.PeakContext))
-		}
 		if err := doc.WriteFile(file); err != nil {
 			return "", err
 		}
 		return fmt.Sprintf("%s: done (via reconcile)", doc.Card.ID), nil
 	case "failed":
+		if hasResult {
+			// Worker crashed but did write a Result — count it as done.
+			if dryRun {
+				return fmt.Sprintf("Would complete %s via reconcile (result present despite failure)", doc.Card.ID), nil
+			}
+			result, err := fsm.Apply(doc.Card.Status, fsm.TransitionComplete)
+			if err != nil {
+				return "", err
+			}
+			doc.Card.Status = result.To
+			backfillStatusFields(doc, statusResult)
+			if statusResult.Tokens != nil {
+				doc.Card.Tokens = tokenUsage(statusResult.Tokens)
+			}
+			appendLog(doc, "done -- agent-mux reports failed but Result section is populated; marking done")
+			if err := doc.WriteFile(file); err != nil {
+				return "", err
+			}
+			return fmt.Sprintf("%s: done (via reconcile, result present despite failure)", doc.Card.ID), nil
+		}
 		reason := "agent-mux reports failed"
 		if strings.TrimSpace(statusResult.Error) != "" {
 			reason = fmt.Sprintf("agent-mux reports failed: %s", strings.TrimSpace(statusResult.Error))
@@ -181,33 +255,57 @@ func reconcileDispatchedTicket(file string, doc *frontmatter.Document, statusRes
 		if dryRun {
 			return fmt.Sprintf("Would fail %s: %s", doc.Card.ID, reason), nil
 		}
-		return failDuringReconcile(file, doc, cfg, reason, "failed -- "+reason)
+		return failDuringReconcile(file, doc, statusResult, reason, "failed -- "+reason)
 	case "timeout":
+		if hasResult {
+			// Timed out but worker wrote a Result — count it as done.
+			if dryRun {
+				return fmt.Sprintf("Would complete %s via reconcile (result present despite timeout)", doc.Card.ID), nil
+			}
+			result, err := fsm.Apply(doc.Card.Status, fsm.TransitionComplete)
+			if err != nil {
+				return "", err
+			}
+			doc.Card.Status = result.To
+			backfillStatusFields(doc, statusResult)
+			if statusResult.Tokens != nil {
+				doc.Card.Tokens = tokenUsage(statusResult.Tokens)
+			}
+			appendLog(doc, "done -- dispatch timed out but Result section is populated; marking done")
+			if err := doc.WriteFile(file); err != nil {
+				return "", err
+			}
+			return fmt.Sprintf("%s: done (via reconcile, result present despite timeout)", doc.Card.ID), nil
+		}
 		if dryRun {
 			return fmt.Sprintf("Would fail %s: dispatch timed out", doc.Card.ID), nil
 		}
-		return failDuringReconcile(file, doc, cfg, "dispatch timed out", "failed -- dispatch timed out (reconcile)")
+		return failDuringReconcile(file, doc, statusResult, "dispatch timed out", "failed -- dispatch timed out (reconcile)")
 	default:
 		return "", nil
 	}
 }
 
-func failDuringReconcile(file string, doc *frontmatter.Document, cfg config.Config, message string, logLine string) (string, error) {
+func failDuringReconcile(file string, doc *frontmatter.Document, statusResult *dispatch.StatusResult, message string, logLine string) (string, error) {
 	result, err := fsm.Apply(doc.Card.Status, fsm.TransitionFail)
 	if err != nil {
 		return "", err
 	}
 	doc.Card.Status = result.To
+	backfillStatusFields(doc, statusResult)
 	if result.SetLastOutcome != "" {
 		doc.Card.LastAttemptOutcome = stringPtr(result.SetLastOutcome)
 	}
 	appendLog(doc, logLine)
-
+	cfg, err := config.Load()
+	if err != nil {
+		return "", err
+	}
 	maxRetry := cfg.MaxRetry
-	if maxRetry == 0 {
+	if maxRetry <= 0 {
 		maxRetry = 3
 	}
-	if doc.Card.Attempts >= maxRetry {
+	if shouldAutoBlock(doc.Card.Attempts, maxRetry) {
 		blockResult, err := fsm.Apply(doc.Card.Status, fsm.TransitionBlock)
 		if err != nil {
 			return "", err
@@ -217,15 +315,22 @@ func failDuringReconcile(file string, doc *frontmatter.Document, cfg config.Conf
 		doc.Card.BlockReason = &autoReason
 		appendLog(doc, fmt.Sprintf("blocked -- auto-blocked after %d failed attempts", maxRetry))
 	}
-
 	if err := doc.WriteFile(file); err != nil {
 		return "", err
 	}
-	actionSuffix := fmt.Sprintf("failed (%s)", message)
-	if doc.Card.Status == frontmatter.StatusBlocked {
-		actionSuffix = fmt.Sprintf("failed and auto-blocked (%s)", message)
+	return fmt.Sprintf("%s: failed (%s)", doc.Card.ID, message), nil
+}
+
+func backfillStatusFields(doc *frontmatter.Document, statusResult *dispatch.StatusResult) {
+	if statusResult == nil {
+		return
 	}
-	return fmt.Sprintf("%s: %s", doc.Card.ID, actionSuffix), nil
+	if statusResult.SessionID != "" {
+		doc.Card.SessionID = stringPtr(statusResult.SessionID)
+	}
+	if statusResult.Tokens != nil {
+		doc.Card.Tokens = tokenUsage(statusResult.Tokens)
+	}
 }
 
 func consecutiveStatusQueryFailures(doc *frontmatter.Document) int {
@@ -253,3 +358,4 @@ func tokenUsage(tokens *dispatch.TokenData) *frontmatter.TokenUsage {
 		PeakContext: tokens.PeakContext,
 	}
 }
+

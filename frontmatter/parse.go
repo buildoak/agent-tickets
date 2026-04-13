@@ -111,19 +111,23 @@ func cloneCard(card Card) Card {
 	if card.Awaits != nil {
 		cloned.Awaits = append([]string(nil), card.Awaits...)
 	}
+	if card.Skills != nil {
+		cloned.Skills = append([]string(nil), card.Skills...)
+	}
 	cloned.PlanRef = cloneStringPtr(card.PlanRef)
 	cloned.DispatchID = cloneStringPtr(card.DispatchID)
 	cloned.SessionID = cloneStringPtr(card.SessionID)
+	cloned.DispatchedAt = cloneStringPtr(card.DispatchedAt)
 	cloned.Profile = cloneStringPtr(card.Profile)
 	cloned.Engine = cloneStringPtr(card.Engine)
 	cloned.Model = cloneStringPtr(card.Model)
 	cloned.Effort = cloneStringPtr(card.Effort)
-	cloned.WorkDir = cloneStringPtr(card.WorkDir)
-	if card.Skills != nil {
-		cloned.Skills = append([]string(nil), card.Skills...)
-	}
 	cloned.LastAttemptOutcome = cloneStringPtr(card.LastAttemptOutcome)
 	cloned.BlockReason = cloneStringPtr(card.BlockReason)
+	cloned.DefaultProfile = cloneStringPtr(card.DefaultProfile)
+	if card.DefaultSkills != nil {
+		cloned.DefaultSkills = append([]string(nil), card.DefaultSkills...)
+	}
 	if card.Tokens != nil {
 		tokens := *card.Tokens
 		cloned.Tokens = &tokens

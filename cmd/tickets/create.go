@@ -21,12 +21,13 @@ func cmdCreate(args []string) error {
 	tier := fs.String("tier", "", "ticket tier")
 	manual := fs.Bool("manual", false, "manual ticket")
 	dependsOn := fs.String("depends-on", "", "comma-separated dependencies")
-	awaits := fs.String("awaits", "", "comma-separated soft dependencies (terminal-state gating)")
+	awaits := fs.String("awaits", "", "comma-separated soft dependencies (awaits terminal)")
+	skills := fs.String("skills", "", "comma-separated skills")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if fs.NArg() != 0 {
-		return fmt.Errorf("usage: tickets create --initiative X --title \"...\" --tier worker [--manual] [--depends-on A,B] [--awaits A,B]")
+		return fmt.Errorf("usage: tickets create --initiative X --title \"...\" --tier worker [--manual] [--depends-on A,B] [--awaits A,B] [--skills A,B]")
 	}
 	if strings.TrimSpace(*initiative) == "" {
 		return fmt.Errorf("--initiative is required")
@@ -58,17 +59,30 @@ func cmdCreate(args []string) error {
 		return err
 	}
 
-	id := fmt.Sprintf("%s-%03d", *initiative, seq)
+	id := fmt.Sprintf("%s-%03d", strings.ToUpper(*initiative), seq)
 	deps := splitCSV(*dependsOn)
 	if len(deps) > 0 {
 		if err := validateDependencies(baseDir, id, deps); err != nil {
 			return err
 		}
 	}
-	awaitsList := splitCSV(*awaits)
-	if len(awaitsList) > 0 {
-		if err := validateDependencies(baseDir, id, awaitsList); err != nil {
+
+	awaitsDeps := splitCSV(*awaits)
+	if len(awaitsDeps) > 0 {
+		if err := validateDependencies(baseDir, id, awaitsDeps); err != nil {
 			return err
+		}
+	}
+
+	cardSkills := splitCSV(*skills)
+
+	// Inherit default_skills from initiative card when no explicit skills provided.
+	if len(cardSkills) == 0 {
+		initPath := filepath.Join(baseDir, "INITIATIVES", *initiative+".md")
+		if initDoc, err := frontmatter.ParseFile(initPath); err == nil {
+			if len(initDoc.Card.DefaultSkills) > 0 {
+				cardSkills = append([]string(nil), initDoc.Card.DefaultSkills...)
+			}
 		}
 	}
 
@@ -82,16 +96,15 @@ func cmdCreate(args []string) error {
 		Created:    dateOnly(),
 		Manual:     *manual,
 		DependsOn:  deps,
-		Awaits:     awaitsList,
+		Awaits:     awaitsDeps,
+		Skills:     cardSkills,
 		Attempts:   0,
 	})
 	appendLog(doc, "open -- created")
 
 	path := filepath.Join(initiativeDir, id+".md")
 	if _, err := os.Stat(path); err == nil {
-		return fmt.Errorf("error: %s already exists at %s — refusing to overwrite. Run 'tickets list --initiative %s' to see existing tickets", id, path, *initiative)
-	} else if !os.IsNotExist(err) {
-		return err
+		return fmt.Errorf("ticket file already exists at %s (possible case collision with existing file)", path)
 	}
 	if err := doc.WriteFile(path); err != nil {
 		return err

@@ -53,18 +53,22 @@ type Card struct {
 	DependsOn []string `yaml:"depends_on"`
 	Awaits    []string `yaml:"awaits"`
 
-	DispatchID *string `yaml:"dispatch_id"`
-	SessionID  *string `yaml:"session_id"`
-	Profile    *string `yaml:"profile"`
-	Engine     *string `yaml:"engine"`
-	Model      *string `yaml:"model"`
-	Effort     *string `yaml:"effort"`
-	WorkDir    *string  `yaml:"work_dir"`
-	Skills     []string `yaml:"skills"`
+	Skills []string `yaml:"skills"`
+
+	DispatchID   *string `yaml:"dispatch_id"`
+	SessionID    *string `yaml:"session_id"`
+	DispatchedAt *string `yaml:"dispatched_at"`
+	Profile      *string `yaml:"profile"`
+	Engine       *string `yaml:"engine"`
+	Model        *string `yaml:"model"`
+	Effort       *string `yaml:"effort"`
 
 	Attempts           int     `yaml:"attempts"`
 	LastAttemptOutcome *string `yaml:"last_attempt_outcome"`
 	BlockReason        *string `yaml:"block_reason"`
+
+	DefaultProfile *string  `yaml:"default_profile"`
+	DefaultSkills  []string `yaml:"default_skills"`
 
 	Tokens *TokenUsage `yaml:"tokens"`
 }

@@ -83,7 +83,7 @@ func TestFieldMutationRoundTrip(t *testing.T) {
 }
 
 func TestHeaderMutationPreservesUnchangedBytes(t *testing.T) {
-	data := []byte("---\nid: TEST-010\ninitiative: TEST\ntitle: Keep formatting\nstatus: open\ntier: worker\ntags: []\ncreated: 2026-04-06\nmanual: false\nplan_ref: null\ndepends_on: []\ndispatch_id: null\nsession_id: null\nengine: null\nmodel: null\neffort: null\nattempts: 0\nlast_attempt_outcome: null\nblock_reason: null\ntokens: null\n---\n\n## Scope\nKeep\n")
+	data := []byte("---\nid: TEST-010\ninitiative: TEST\ntitle: Keep formatting\nstatus: open\ntier: worker\ntags: []\ncreated: 2026-04-06\nmanual: false\nplan_ref: null\ndepends_on: []\nskills: []\nwork_dir: null\ndispatch_id: null\nsession_id: null\nengine: null\nmodel: null\neffort: null\nattempts: 0\nlast_attempt_outcome: null\nblock_reason: null\ntokens: null\n---\n\n## Scope\nKeep\n")
 	doc, err := Parse(data)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
@@ -108,6 +108,9 @@ func TestHeaderMutationPreservesUnchangedBytes(t *testing.T) {
 		if !strings.Contains(text, line) {
 			t.Fatalf("expected unchanged line %q in:\n%s", line, text)
 		}
+	}
+	if strings.Contains(text, "work_dir:") {
+		t.Fatalf("expected deprecated work_dir field omitted after rewrite:\n%s", text)
 	}
 }
 
@@ -334,92 +337,6 @@ func TestSectionLookupDoesNotSubstringMatch(t *testing.T) {
 	}
 }
 
-func TestAwaitsRoundTrip(t *testing.T) {
-	doc := &Document{
-		Card: Card{
-			ID:         "TEST-020",
-			Initiative: "TEST",
-			Title:      "Awaits round trip",
-			Status:     StatusOpen,
-			Tier:       TierWorker,
-			Tags:       []string{},
-			Created:    "2026-04-13",
-			Manual:     false,
-			DependsOn:  []string{},
-			Awaits:     []string{"TEST-001", "TEST-002"},
-		},
-		Body: []byte("## Result\n\nbody\n"),
-	}
-
-	serialized, err := doc.Serialize()
-	if err != nil {
-		t.Fatalf("serialize: %v", err)
-	}
-
-	text := string(serialized)
-	if !strings.Contains(text, "awaits:") {
-		t.Fatalf("expected awaits field in serialized output\n%s", text)
-	}
-
-	reparsed, err := Parse(serialized)
-	if err != nil {
-		t.Fatalf("reparse: %v", err)
-	}
-
-	if !reflect.DeepEqual(doc.Card.Awaits, reparsed.Card.Awaits) {
-		t.Fatalf("awaits mismatch\nwant: %#v\ngot: %#v", doc.Card.Awaits, reparsed.Card.Awaits)
-	}
-
-	// Empty awaits should normalize to []
-	emptyDoc := &Document{
-		Card: Card{
-			ID:         "TEST-021",
-			Initiative: "TEST",
-			Title:      "Empty awaits",
-			Status:     StatusOpen,
-			Tier:       TierWorker,
-			Tags:       []string{},
-			Created:    "2026-04-13",
-			Manual:     false,
-			DependsOn:  []string{},
-		},
-		Body: []byte("## Result\n\nbody\n"),
-	}
-
-	serialized2, err := emptyDoc.Serialize()
-	if err != nil {
-		t.Fatalf("serialize empty awaits: %v", err)
-	}
-
-	reparsed2, err := Parse(serialized2)
-	if err != nil {
-		t.Fatalf("reparse empty awaits: %v", err)
-	}
-
-	if reparsed2.Card.Awaits == nil {
-		t.Fatal("expected non-nil awaits after normalization")
-	}
-	if len(reparsed2.Card.Awaits) != 0 {
-		t.Fatalf("expected empty awaits slice, got %#v", reparsed2.Card.Awaits)
-	}
-}
-
-func TestIsTerminal(t *testing.T) {
-	terminal := []Status{StatusDone, StatusFailed, StatusBlocked, StatusClosed}
-	for _, s := range terminal {
-		if !s.IsTerminal() {
-			t.Fatalf("expected %s to be terminal", s)
-		}
-	}
-
-	nonTerminal := []Status{StatusOpen, StatusDispatched}
-	for _, s := range nonTerminal {
-		if s.IsTerminal() {
-			t.Fatalf("expected %s to be non-terminal", s)
-		}
-	}
-}
-
 func TestParseEdgeCases(t *testing.T) {
 	t.Run("empty body", func(t *testing.T) {
 		data := []byte("---\nid: TEST-007\ninitiative: TEST\ntitle: Empty body\nstatus: open\ntier: worker\ntags: []\ncreated: 2026-04-06\nmanual: false\nplan_ref: null\ndepends_on: []\ndispatch_id: null\nsession_id: null\nengine: null\nmodel: null\neffort: null\nattempts: 0\nlast_attempt_outcome: null\nblock_reason: null\ntokens: null\n---")
@@ -528,5 +445,130 @@ func TestWriteFileAtomic(t *testing.T) {
 	}
 	if len(matches) != 0 {
 		t.Fatalf("expected temp files cleaned up, got %#v", matches)
+	}
+}
+
+func TestAwaitsRoundTrip(t *testing.T) {
+	doc := &Document{
+		Card: Card{
+			ID:         "TEST-020",
+			Initiative: "TEST",
+			Title:      "Awaits round trip",
+			Status:     StatusOpen,
+			Tier:       TierWorker,
+			Tags:       []string{},
+			Created:    "2026-04-13",
+			Manual:     false,
+			DependsOn:  []string{},
+			Awaits:     []string{"FOO-001", "FOO-002"},
+			Skills:     []string{},
+		},
+		Body: []byte("## Result\n\nbody\n"),
+	}
+
+	serialized, err := doc.Serialize()
+	if err != nil {
+		t.Fatalf("serialize: %v", err)
+	}
+
+	text := string(serialized)
+	if !strings.Contains(text, "FOO-001") || !strings.Contains(text, "FOO-002") {
+		t.Fatalf("expected awaits entries in serialized output\n%s", text)
+	}
+
+	reparsed, err := Parse(serialized)
+	if err != nil {
+		t.Fatalf("reparse: %v", err)
+	}
+
+	if !reflect.DeepEqual(doc.Card.Awaits, reparsed.Card.Awaits) {
+		t.Fatalf("awaits mismatch\nwant: %#v\ngot: %#v", doc.Card.Awaits, reparsed.Card.Awaits)
+	}
+
+	// Empty awaits normalizes to [].
+	emptyDoc := &Document{
+		Card: Card{
+			ID:         "TEST-021",
+			Initiative: "TEST",
+			Title:      "Empty awaits",
+			Status:     StatusOpen,
+			Tier:       TierWorker,
+			Tags:       []string{},
+			Created:    "2026-04-13",
+			DependsOn:  []string{},
+			Skills:     []string{},
+		},
+		Body: []byte("## Result\n"),
+	}
+
+	serialized, err = emptyDoc.Serialize()
+	if err != nil {
+		t.Fatalf("serialize empty awaits: %v", err)
+	}
+
+	reparsed, err = Parse(serialized)
+	if err != nil {
+		t.Fatalf("reparse empty awaits: %v", err)
+	}
+	if reparsed.Card.Awaits == nil || len(reparsed.Card.Awaits) != 0 {
+		t.Fatalf("expected empty awaits slice, got %#v", reparsed.Card.Awaits)
+	}
+}
+
+func TestDefaultProfileAndSkillsSurviveMutation(t *testing.T) {
+	data := []byte("---\nid: INIT-001\ninitiative: INIT\ntitle: Initiative card\nstatus: open\ntier: worker\ntags: []\ncreated: 2026-04-13\nmanual: false\nplan_ref: null\ndepends_on: []\nawaits: []\nskills: []\ndispatch_id: null\nsession_id: null\ndispatched_at: null\nprofile: null\nengine: null\nmodel: null\neffort: null\nattempts: 0\nlast_attempt_outcome: null\nblock_reason: null\ndefault_profile: scout\ndefault_skills:\n    - web-search\n    - paper-ops\ntokens: null\n---\n\n## Scope\nTest\n")
+	doc, err := Parse(data)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+
+	if doc.Card.DefaultProfile == nil || *doc.Card.DefaultProfile != "scout" {
+		t.Fatalf("expected default_profile 'scout', got %#v", doc.Card.DefaultProfile)
+	}
+	if len(doc.Card.DefaultSkills) != 2 || doc.Card.DefaultSkills[0] != "web-search" || doc.Card.DefaultSkills[1] != "paper-ops" {
+		t.Fatalf("expected default_skills [web-search, paper-ops], got %#v", doc.Card.DefaultSkills)
+	}
+
+	// Mutate an unrelated field.
+	doc.Card.Title = "Mutated title"
+
+	serialized, err := doc.Serialize()
+	if err != nil {
+		t.Fatalf("serialize: %v", err)
+	}
+
+	text := string(serialized)
+	if !strings.Contains(text, "default_profile: scout\n") {
+		t.Fatalf("default_profile lost after mutation:\n%s", text)
+	}
+	if !strings.Contains(text, "web-search") || !strings.Contains(text, "paper-ops") {
+		t.Fatalf("default_skills lost after mutation:\n%s", text)
+	}
+
+	reparsed, err := Parse(serialized)
+	if err != nil {
+		t.Fatalf("reparse: %v", err)
+	}
+	if reparsed.Card.DefaultProfile == nil || *reparsed.Card.DefaultProfile != "scout" {
+		t.Fatalf("default_profile lost after round trip: %#v", reparsed.Card.DefaultProfile)
+	}
+	if len(reparsed.Card.DefaultSkills) != 2 || reparsed.Card.DefaultSkills[0] != "web-search" || reparsed.Card.DefaultSkills[1] != "paper-ops" {
+		t.Fatalf("default_skills lost after round trip: %#v", reparsed.Card.DefaultSkills)
+	}
+}
+
+func TestIsTerminal(t *testing.T) {
+	terminal := []Status{StatusDone, StatusFailed, StatusBlocked, StatusClosed}
+	for _, s := range terminal {
+		if !s.IsTerminal() {
+			t.Fatalf("expected %q to be terminal", s)
+		}
+	}
+
+	nonTerminal := []Status{StatusOpen, StatusDispatched}
+	for _, s := range nonTerminal {
+		if s.IsTerminal() {
+			t.Fatalf("expected %q to be non-terminal", s)
+		}
 	}
 }

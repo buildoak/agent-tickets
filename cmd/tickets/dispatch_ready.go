@@ -3,6 +3,8 @@ package main
 import (
 	"fmt"
 	"slices"
+	"strings"
+	"time"
 
 	"github.com/buildoak/agent-tickets/config"
 	"github.com/buildoak/agent-tickets/dispatch"
@@ -49,6 +51,8 @@ func dispatchReadyTickets(baseDir string, maxDispatch int, dryRun bool) (int, er
 		return 0, err
 	}
 
+	engineWeight := buildEngineWeightMap(files, cfg)
+
 	eligible := make([]*frontmatter.Document, 0)
 	for _, file := range files {
 		doc, err := frontmatter.ParseFile(file)
@@ -56,6 +60,9 @@ func dispatchReadyTickets(baseDir string, maxDispatch int, dryRun bool) (int, er
 			continue
 		}
 		if doc.Card.Status != frontmatter.StatusOpen || doc.Card.Manual {
+			continue
+		}
+		if strings.TrimSpace(doc.GetSection("Scope")) == "" {
 			continue
 		}
 
@@ -102,7 +109,6 @@ func dispatchReadyTickets(baseDir string, maxDispatch int, dryRun bool) (int, er
 		return 0, nil
 	}
 
-	limit := min(maxDispatch, len(eligible))
 	var d dispatch.Dispatcher
 	if !dryRun {
 		d, err = getDispatcher()
@@ -112,13 +118,48 @@ func dispatchReadyTickets(baseDir string, maxDispatch int, dryRun bool) (int, er
 	}
 	dispatched := 0
 
-	for _, doc := range eligible[:limit] {
-		if _, err := resolveDispatchOptions(doc.Card, dispatch.DispatchOptions{}, cfg); err != nil {
+	for i, doc := range eligible {
+		if dispatched >= maxDispatch {
+			break
+		}
+
+		resolvedOpts, err := resolveDispatchOptions(baseDir, doc.Card, dispatch.DispatchOptions{}, cfg)
+		if err != nil {
 			fmt.Fprintf(stdout, "%s: error: %v\n", doc.Card.ID, err)
 			continue
 		}
+
+		// Resolve the actual engine for cap checking. When engine falls
+		// through to config defaults but a profile defines a specific engine
+		// (e.g. paper-ops-worker → gemini), use the profile's engine.
+		capEngine := resolvedOpts.Engine
+		capModel := resolvedOpts.Model
+		if resolvedOpts.EngineSource == dispatch.SourceConfig && resolvedOpts.Profile != "" {
+			if pe := cfg.ResolveProfileEngine(resolvedOpts.Profile); pe != "" {
+				capEngine = pe
+			}
+		}
+		if resolvedOpts.ModelSource == dispatch.SourceConfig && resolvedOpts.Profile != "" {
+			if pm := cfg.ResolveProfileModel(resolvedOpts.Profile); pm != "" {
+				capModel = pm
+			}
+		}
+
+		candidateWeight := cfg.ModelWeightFor(capModel)
+		engineCap := cfg.EngineCap(capEngine)
+		if engineCap >= 0 {
+			currentWeight := engineWeight[capEngine]
+			if currentWeight+candidateWeight > engineCap {
+				fmt.Fprintf(stdout, "%s: skipped (engine %s weight %d+%d > cap %d)\n",
+					doc.Card.ID, capEngine, currentWeight, candidateWeight, engineCap)
+				continue
+			}
+		}
+
 		if dryRun {
 			fmt.Fprintf(stdout, "Would dispatch %s\n", doc.Card.ID)
+			dispatched++
+			engineWeight[capEngine] += candidateWeight
 			continue
 		}
 
@@ -129,10 +170,59 @@ func dispatchReadyTickets(baseDir string, maxDispatch int, dryRun bool) (int, er
 		}
 		fmt.Fprintf(stdout, "%s: dispatched dispatch_id=%s session_id=%s\n", doc.Card.ID, result.DispatchID, result.SessionID)
 		dispatched++
+		engineWeight[capEngine] += candidateWeight
+
+		if cfg.StaggerSeconds > 0 && dispatched < maxDispatch && i < len(eligible)-1 {
+			fmt.Fprintf(stdout, "staggering %ds before next dispatch\n", cfg.StaggerSeconds)
+			time.Sleep(time.Duration(cfg.StaggerSeconds) * time.Second)
+		}
 	}
 
 	if dryRun {
-		return limit, nil
+		return dispatched, nil
+	}
+	if dispatched == 0 {
+		fmt.Fprintln(stdout, "nothing to dispatch")
 	}
 	return dispatched, nil
+}
+
+// buildEngineWeightMap sums the model weight of all in-flight dispatched tickets by engine.
+func buildEngineWeightMap(files []string, cfg config.Config) map[string]int {
+	weights := make(map[string]int)
+	for _, file := range files {
+		doc, err := frontmatter.ParseFile(file)
+		if err != nil {
+			continue
+		}
+		if doc.Card.Status != frontmatter.StatusDispatched {
+			continue
+		}
+		engine := valueOrBlank(doc.Card.Engine)
+		model := valueOrBlank(doc.Card.Model)
+		if engine == "" {
+			continue
+		}
+		// When a ticket was dispatched via a profile that handles engine
+		// selection, the card stores "profile-defined" instead of the real
+		// engine/model. Resolve through the profile_engine/profile_model
+		// config maps so the weight lands on the correct engine bucket.
+		if engine == profileDefinedSentinel {
+			profile := valueOrBlank(doc.Card.Profile)
+			if profile != "" {
+				engine = cfg.ResolveProfileEngine(profile)
+			}
+		}
+		if model == profileDefinedSentinel {
+			profile := valueOrBlank(doc.Card.Profile)
+			if profile != "" {
+				model = cfg.ResolveProfileModel(profile)
+			}
+		}
+		if engine == "" {
+			continue
+		}
+		weights[engine] += cfg.ModelWeightFor(model)
+	}
+	return weights
 }

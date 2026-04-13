@@ -5,7 +5,9 @@ import (
 	"sort"
 	"strings"
 	"text/tabwriter"
+	"time"
 
+	"github.com/buildoak/agent-tickets/config"
 	"github.com/buildoak/agent-tickets/frontmatter"
 )
 
@@ -23,12 +25,13 @@ func cmdBoard(args []string) error {
 
 	fs := newFlagSet("board")
 	initiative := fs.String("initiative", "", "initiative filter")
+	status := fs.String("status", "", "status filter")
 	asJSON := fs.Bool("json", false, "output json")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if fs.NArg() != 0 {
-		return fmt.Errorf("usage: tickets board [--initiative X] [--json]")
+		return fmt.Errorf("usage: tickets board [--initiative X] [--status Y] [--json]")
 	}
 
 	var files []string
@@ -48,9 +51,16 @@ func cmdBoard(args []string) error {
 		}
 	}
 
+	cfg, err := config.Load()
+	if err != nil {
+		return err
+	}
+
 	statusByID := make(map[string]frontmatter.Status, len(files))
 	failureByID := make(map[string]string, len(files))
+	stallByID := make(map[string]string, len(files))
 	entries := make([]BoardEntry, 0, len(files))
+	now := time.Now()
 	for _, file := range files {
 		doc, err := frontmatter.ParseFile(file)
 		if err != nil {
@@ -58,11 +68,19 @@ func cmdBoard(args []string) error {
 		}
 		statusByID[doc.Card.ID] = doc.Card.Status
 		failureByID[doc.Card.ID] = latestFailureReason(doc)
+		if doc.Card.Status == frontmatter.StatusDispatched {
+			if ann := stallAnnotation(doc, cfg, now); ann != "" {
+				stallByID[doc.Card.ID] = ann
+			}
+		}
+		if *status != "" && string(doc.Card.Status) != *status {
+			continue
+		}
 		entries = append(entries, BoardEntry{Card: doc.Card})
 	}
 
 	for i := range entries {
-		entries[i].Annotation, entries[i].Detail = boardAnnotation(entries[i].Card, statusByID, failureByID)
+		entries[i].Annotation, entries[i].Detail = boardAnnotation(entries[i].Card, statusByID, failureByID, stallByID, cfg)
 	}
 
 	sort.Slice(entries, func(i, j int) bool {
@@ -88,7 +106,7 @@ func cmdBoard(args []string) error {
 	return tw.Flush()
 }
 
-func boardAnnotation(card frontmatter.Card, statusByID map[string]frontmatter.Status, failureByID map[string]string) (string, string) {
+func boardAnnotation(card frontmatter.Card, statusByID map[string]frontmatter.Status, failureByID map[string]string, stallByID map[string]string, cfg config.Config) (string, string) {
 	switch card.Status {
 	case frontmatter.StatusOpen:
 		if card.Manual {
@@ -110,7 +128,27 @@ func boardAnnotation(card frontmatter.Card, statusByID map[string]frontmatter.St
 		}
 		return "queued", ""
 	case frontmatter.StatusDispatched:
-		return "running", strings.Trim(strings.Join([]string{valueOrBlank(card.Engine), valueOrBlank(card.Model)}, "/"), "/")
+		engineStr := valueOrBlank(card.Engine)
+		modelStr := valueOrBlank(card.Model)
+		if engineStr == profileDefinedSentinel {
+			profile := valueOrBlank(card.Profile)
+			if profile != "" {
+				if pe := cfg.ResolveProfileEngine(profile); pe != "" {
+					engineStr = pe
+				}
+				if pm := cfg.ResolveProfileModel(profile); pm != "" {
+					modelStr = pm
+				}
+			}
+		}
+		detail := strings.Trim(strings.Join([]string{engineStr, modelStr}, "/"), "/")
+		if stall, ok := stallByID[card.ID]; ok {
+			if detail != "" {
+				detail += " "
+			}
+			detail += stall
+		}
+		return "running", detail
 	case frontmatter.StatusDone:
 		return "done", formatTokens(card.Tokens)
 	case frontmatter.StatusFailed:
@@ -124,6 +162,8 @@ func boardAnnotation(card frontmatter.Card, statusByID map[string]frontmatter.St
 		return "failed", detail
 	case frontmatter.StatusBlocked:
 		return "blocked", valueOrBlank(card.BlockReason)
+	case frontmatter.StatusClosed:
+		return "CLOSED", valueOrBlank(card.LastAttemptOutcome)
 	default:
 		return string(card.Status), ""
 	}
@@ -148,6 +188,19 @@ func latestFailureReason(doc *frontmatter.Document) string {
 		return strings.TrimSpace(parts[1])
 	}
 	return ""
+}
+
+func stallAnnotation(doc *frontmatter.Document, cfg config.Config, now time.Time) string {
+	dispatchedAt := resolveDispatchTimestamp(doc)
+	if dispatchedAt.IsZero() {
+		return ""
+	}
+	timeout := time.Duration(cfg.StallTimeout(string(doc.Card.Tier))) * time.Minute
+	elapsed := now.Sub(dispatchedAt)
+	if elapsed <= timeout {
+		return ""
+	}
+	return fmt.Sprintf("STALLED %.0fm (timeout %dm)", elapsed.Minutes(), cfg.StallTimeout(string(doc.Card.Tier)))
 }
 
 func formatTokens(tokens *frontmatter.TokenUsage) string {

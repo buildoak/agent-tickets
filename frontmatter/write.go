@@ -54,17 +54,19 @@ var cardFieldOrder = []string{
 	"plan_ref",
 	"depends_on",
 	"awaits",
+	"skills",
 	"dispatch_id",
 	"session_id",
+	"dispatched_at",
 	"profile",
 	"engine",
 	"model",
 	"effort",
-	"work_dir",
-	"skills",
 	"attempts",
 	"last_attempt_outcome",
 	"block_reason",
+	"default_profile",
+	"default_skills",
 	"tokens",
 }
 
@@ -75,13 +77,16 @@ func (d *Document) serializeHeader(card Card) ([]byte, error) {
 
 	original := d.originalCard
 	normalizeCardSlices(&original)
-	if reflect.DeepEqual(original, card) {
+	if reflect.DeepEqual(original, card) && !d.hasUnknownHeaderFields() {
 		return append([]byte(nil), d.rawHeader...), nil
 	}
 
 	var out bytes.Buffer
 	seen := make(map[string]struct{}, len(cardFieldOrder))
 	for _, key := range d.headerOrder() {
+		if !isKnownCardField(key) {
+			continue
+		}
 		seen[key] = struct{}{}
 		fieldBytes, err := d.serializeField(key, original, card)
 		if err != nil {
@@ -108,6 +113,15 @@ func (d *Document) headerOrder() []string {
 		return append([]string(nil), d.fieldOrder...)
 	}
 	return append([]string(nil), cardFieldOrder...)
+}
+
+func (d *Document) hasUnknownHeaderFields() bool {
+	for _, key := range d.fieldOrder {
+		if !isKnownCardField(key) {
+			return true
+		}
+	}
+	return false
 }
 
 func (d *Document) serializeField(key string, original, current Card) ([]byte, error) {
@@ -144,10 +158,14 @@ func marshalCardField(key string, card Card) ([]byte, error) {
 		value = card.DependsOn
 	case "awaits":
 		value = card.Awaits
+	case "skills":
+		value = card.Skills
 	case "dispatch_id":
 		value = card.DispatchID
 	case "session_id":
 		value = card.SessionID
+	case "dispatched_at":
+		value = card.DispatchedAt
 	case "profile":
 		value = card.Profile
 	case "engine":
@@ -156,16 +174,16 @@ func marshalCardField(key string, card Card) ([]byte, error) {
 		value = card.Model
 	case "effort":
 		value = card.Effort
-	case "work_dir":
-		value = card.WorkDir
-	case "skills":
-		value = card.Skills
 	case "attempts":
 		value = card.Attempts
 	case "last_attempt_outcome":
 		value = card.LastAttemptOutcome
 	case "block_reason":
 		value = card.BlockReason
+	case "default_profile":
+		value = card.DefaultProfile
+	case "default_skills":
+		value = card.DefaultSkills
 	case "tokens":
 		value = card.Tokens
 	default:
@@ -221,10 +239,14 @@ func cardFieldEqual(key string, a, b Card) bool {
 		return reflect.DeepEqual(a.DependsOn, b.DependsOn)
 	case "awaits":
 		return reflect.DeepEqual(a.Awaits, b.Awaits)
+	case "skills":
+		return reflect.DeepEqual(a.Skills, b.Skills)
 	case "dispatch_id":
 		return reflect.DeepEqual(a.DispatchID, b.DispatchID)
 	case "session_id":
 		return reflect.DeepEqual(a.SessionID, b.SessionID)
+	case "dispatched_at":
+		return reflect.DeepEqual(a.DispatchedAt, b.DispatchedAt)
 	case "profile":
 		return reflect.DeepEqual(a.Profile, b.Profile)
 	case "engine":
@@ -233,21 +255,30 @@ func cardFieldEqual(key string, a, b Card) bool {
 		return reflect.DeepEqual(a.Model, b.Model)
 	case "effort":
 		return reflect.DeepEqual(a.Effort, b.Effort)
-	case "work_dir":
-		return reflect.DeepEqual(a.WorkDir, b.WorkDir)
-	case "skills":
-		return reflect.DeepEqual(a.Skills, b.Skills)
 	case "attempts":
 		return a.Attempts == b.Attempts
 	case "last_attempt_outcome":
 		return reflect.DeepEqual(a.LastAttemptOutcome, b.LastAttemptOutcome)
 	case "block_reason":
 		return reflect.DeepEqual(a.BlockReason, b.BlockReason)
+	case "default_profile":
+		return reflect.DeepEqual(a.DefaultProfile, b.DefaultProfile)
+	case "default_skills":
+		return reflect.DeepEqual(a.DefaultSkills, b.DefaultSkills)
 	case "tokens":
 		return reflect.DeepEqual(a.Tokens, b.Tokens)
 	default:
 		return false
 	}
+}
+
+func isKnownCardField(key string) bool {
+	for _, field := range cardFieldOrder {
+		if field == key {
+			return true
+		}
+	}
+	return false
 }
 
 func normalizeCardSlices(card *Card) {
@@ -262,6 +293,9 @@ func normalizeCardSlices(card *Card) {
 	}
 	if card.Skills == nil {
 		card.Skills = []string{}
+	}
+	if card.DefaultSkills == nil {
+		card.DefaultSkills = []string{}
 	}
 }
 

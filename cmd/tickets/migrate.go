@@ -120,7 +120,7 @@ func cmdMigrate(args []string) error {
 		for _, update := range updates {
 			affected = append(affected, update.id)
 		}
-		return fmt.Errorf("refusing migrate: depends_on rewrite scope too large (%d tickets): %s", len(updates), strings.Join(affected, ", "))
+		return fmt.Errorf("refusing migrate: dependency rewrite scope too large (%d tickets): %s", len(updates), strings.Join(affected, ", "))
 	}
 
 	graph, err := buildDepGraph(baseDir)
@@ -128,20 +128,22 @@ func cmdMigrate(args []string) error {
 		return err
 	}
 	delete(graph, id)
-	edges := append([]string(nil), doc.Card.DependsOn...)
-	edges = append(edges, doc.Card.Awaits...)
-	graph[newID] = edges
+	newEdges := append([]string(nil), doc.Card.DependsOn...)
+	newEdges = append(newEdges, doc.Card.Awaits...)
+	graph[newID] = newEdges
 	for _, update := range updates {
-		uEdges := append([]string(nil), update.doc.Card.DependsOn...)
-		uEdges = append(uEdges, update.doc.Card.Awaits...)
-		graph[update.id] = uEdges
+		updateEdges := append([]string(nil), update.doc.Card.DependsOn...)
+		updateEdges = append(updateEdges, update.doc.Card.Awaits...)
+		graph[update.id] = updateEdges
 	}
 
-	if err := validateDependencyGraph(graph, newID, doc.Card.DependsOn); err != nil {
+	allDeps := append(append([]string(nil), doc.Card.DependsOn...), doc.Card.Awaits...)
+	if err := validateDependencyGraph(graph, newID, allDeps); err != nil {
 		return err
 	}
 	for _, update := range updates {
-		if err := validateDependencyGraph(graph, update.id, update.doc.Card.DependsOn); err != nil {
+		updateAllDeps := append(append([]string(nil), update.doc.Card.DependsOn...), update.doc.Card.Awaits...)
+		if err := validateDependencyGraph(graph, update.id, updateAllDeps); err != nil {
 			return err
 		}
 	}
@@ -151,7 +153,7 @@ func cmdMigrate(args []string) error {
 			return err
 		}
 		for _, update := range updates {
-			if _, err := fmt.Fprintf(stdout, "Would update depends_on in %s: %s -> %s\n", update.id, id, newID); err != nil {
+			if _, err := fmt.Fprintf(stdout, "Would update references in %s: %s -> %s\n", update.id, id, newID); err != nil {
 				return err
 			}
 		}

@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -23,7 +24,7 @@ func getDispatcher() (dispatch.Dispatcher, error) {
 		return nil, err
 	}
 
-	return dispatch.NewShellDispatcher(cfg.AgentMuxBin, cfg.SkillPath), nil
+	return dispatch.NewShellDispatcher(cfg.AgentMuxBin), nil
 }
 
 func cmdDispatch(args []string) error {
@@ -39,24 +40,20 @@ func cmdDispatch(args []string) error {
 	}
 
 	fs := newFlagSet("dispatch")
-	fs.SetOutput(stderr)
 	profile := fs.String("profile", "", "profile")
 	engine := fs.String("engine", "", "engine")
 	model := fs.String("model", "", "model")
 	effort := fs.String("effort", "", "effort")
-	cwd := fs.String("cwd", "", "working directory for agent-mux dispatch")
-	var skills stringSliceFlag
-	fs.Var(&skills, "skill", "skill name to pass to agent-mux (repeatable)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if id == "" {
 		if fs.NArg() != 1 {
-			return fmt.Errorf("usage: tickets dispatch TICKET-ID[,TICKET-ID...] [--profile P --engine X --model Y --effort Z --cwd DIR --skill S]")
+			return fmt.Errorf("usage: tickets dispatch TICKET-ID[,TICKET-ID...] [--profile P --engine X --model Y --effort Z]")
 		}
 		id = fs.Arg(0)
 	} else if fs.NArg() != 0 {
-		return fmt.Errorf("usage: tickets dispatch TICKET-ID[,TICKET-ID...] [--profile P --engine X --model Y --effort Z --cwd DIR --skill S]")
+		return fmt.Errorf("usage: tickets dispatch TICKET-ID[,TICKET-ID...] [--profile P --engine X --model Y --effort Z]")
 	}
 
 	cfg, err := config.Load()
@@ -81,8 +78,6 @@ func cmdDispatch(args []string) error {
 			Engine:  *engine,
 			Model:   *model,
 			Effort:  *effort,
-			WorkDir: *cwd,
-			Skills:  []string(skills),
 		})
 		if err != nil {
 			_, _ = fmt.Fprintf(stdout, "%s: error: %v\n", ticketID, err)
@@ -90,7 +85,7 @@ func cmdDispatch(args []string) error {
 			continue
 		}
 
-		_, _ = fmt.Fprintf(stdout, "%s: dispatched dispatch_id=%s session_id=%s\n", ticketID, result.DispatchID, result.SessionID)
+		_, _ = fmt.Fprintf(stdout, "%s: dispatched dispatch_id=%s\n", ticketID, result.DispatchID)
 	}
 
 	if len(failures) > 0 {
@@ -105,12 +100,21 @@ func dispatchTicket(baseDir, id string, d dispatch.Dispatcher, cfg config.Config
 	if err != nil {
 		return nil, err
 	}
-	resolvedOpts, err := resolveDispatchOptions(doc.Card, opts, cfg)
+	resolvedOpts, err := resolveDispatchOptions(baseDir, doc.Card, opts, cfg)
 	if err != nil {
 		return nil, err
 	}
 	if doc.Card.Status != frontmatter.StatusOpen {
 		return nil, fmt.Errorf("ticket must be open to dispatch: %s", doc.Card.Status)
+	}
+	for _, aw := range doc.Card.Awaits {
+		_, awDoc, err := loadTicket(baseDir, aw)
+		if err != nil {
+			return nil, fmt.Errorf("awaited ticket %s: %w", aw, err)
+		}
+		if !awDoc.Card.Status.IsTerminal() {
+			return nil, fmt.Errorf("awaited ticket %s is not terminal (status: %s)", aw, awDoc.Card.Status)
+		}
 	}
 	for _, dep := range doc.Card.DependsOn {
 		_, depDoc, err := loadTicket(baseDir, dep)
@@ -121,20 +125,11 @@ func dispatchTicket(baseDir, id string, d dispatch.Dispatcher, cfg config.Config
 			return nil, fmt.Errorf("dependency %s is not done", dep)
 		}
 	}
-	for _, aw := range doc.Card.Awaits {
-		_, awDoc, err := loadTicket(baseDir, aw)
-		if err != nil {
-			return nil, fmt.Errorf("awaits %s: %w", aw, err)
-		}
-		if !awDoc.Card.Status.IsTerminal() {
-			return nil, fmt.Errorf("awaited ticket %s is not terminal (status: %s)", aw, awDoc.Card.Status)
-		}
-	}
 	if strings.TrimSpace(doc.GetSection("Scope")) == "" {
 		return nil, fmt.Errorf("ticket must include a non-empty ## Scope section before dispatch")
 	}
 
-	result, err := fsm.Apply(doc.Card.Status, fsm.TransitionDispatch)
+	fsmResult, err := fsm.Apply(doc.Card.Status, fsm.TransitionDispatch)
 	if err != nil {
 		return nil, err
 	}
@@ -147,92 +142,124 @@ func dispatchTicket(baseDir, id string, d dispatch.Dispatcher, cfg config.Config
 		return nil, fmt.Errorf("ticket path must be absolute: %s", absPath)
 	}
 
-	// Compute preamble before writing dispatch metadata so the pre-dispatch
-	// body (including any prior Result/Log) is captured.
+	// Step 1: Dispatch to agent-mux --async. This returns immediately with
+	// a dispatch_id (the worker starts in the background).
 	preamble := dispatchPreamble(doc)
-
-	// Phase 1: Write dispatch metadata to the card BEFORE calling agent-mux.
-	// This prevents a race condition where the worker modifies the card body
-	// (Result, Log) during dispatch and those changes get overwritten when we
-	// write the stale in-memory doc back to disk after agent-mux returns.
-	doc.Card.Status = result.To
-	doc.Card.Profile = stringPtr(resolvedOpts.Profile)
-	doc.Card.Engine = stringPtr(resolvedOpts.Engine)
-	doc.Card.Model = stringPtr(resolvedOpts.Model)
-	if resolvedOpts.Effort != "" {
-		doc.Card.Effort = stringPtr(resolvedOpts.Effort)
-	} else {
-		doc.Card.Effort = nil
-	}
-
-	appendLog(doc, fmt.Sprintf("dispatched -- %s/%s/%s profile=%s", valueOrBlank(doc.Card.Engine), valueOrBlank(doc.Card.Model), valueOrBlank(doc.Card.Effort), resolvedOpts.Profile))
-
-	if err := doc.WriteFile(path); err != nil {
-		return nil, err
-	}
-
-	// Phase 2: Call agent-mux. The worker may modify the card file on disk
-	// during this call (writing Result, Log entries, etc.).
 	dispatchResult, err := d.Dispatch(dispatch.DispatchOptions{
-		Profile:    resolvedOpts.Profile,
-		Engine:     resolvedOpts.Engine,
-		Model:      resolvedOpts.Model,
-		Effort:     resolvedOpts.Effort,
-		WorkDir:    resolvedOpts.WorkDir,
-		TicketPath: absPath,
-		Preamble:   preamble,
-		Skills:     resolvedOpts.Skills,
+		Profile:       resolvedOpts.Profile,
+		Engine:        resolvedOpts.Engine,
+		Model:         resolvedOpts.Model,
+		Effort:        resolvedOpts.Effort,
+		WorkDir:       resolvedOpts.WorkDir,
+		Skills:        resolvedOpts.Skills,
+		TicketPath:    absPath,
+		Preamble:      preamble,
+		ProfileSource: resolvedOpts.ProfileSource,
+		EngineSource:  resolvedOpts.EngineSource,
+		ModelSource:   resolvedOpts.ModelSource,
+		EffortSource:  resolvedOpts.EffortSource,
 	})
 	if err != nil {
-		// Rollback: agent-mux dispatch failed, restore the card to open.
-		// Re-read from disk (Phase 1 already wrote to it) and reset status.
-		if _, rollDoc, loadErr := loadTicket(baseDir, id); loadErr == nil {
-			rollDoc.Card.Status = frontmatter.StatusOpen
-			clearDispatchFields(&rollDoc.Card)
-			appendLog(rollDoc, fmt.Sprintf("rollback -- dispatch failed: %v", err))
-			_ = rollDoc.WriteFile(path)
-		}
 		return nil, err
 	}
 
-	// Phase 3: Re-read the card from disk and patch only dispatch_id.
-	// session_id is not available from --async dispatch (session not yet
-	// created); reconcile backfills it later. Re-reading preserves any
-	// body changes (Result, Log) the worker wrote during Phase 2.
-	_, postDoc, err := loadTicket(baseDir, id)
-	if err != nil {
-		return nil, fmt.Errorf("re-read ticket after dispatch: %w", err)
+	// Step 2: Write the card in one atomic write with status=dispatched,
+	// dispatch_id, and all dispatch fields. When engine/model/effort were
+	// omitted from the dispatch (profile handles them), record
+	// "profile-defined" so the card doesn't lie about what engine ran.
+	engineOmitted := !dispatch.ShouldPassEngineFlags(resolvedOpts)
+	doc.Card.Status = fsmResult.To
+	doc.Card.Profile = stringPtr(resolvedOpts.Profile)
+	if engineOmitted {
+		doc.Card.Engine = stringPtr(profileDefinedSentinel)
+		doc.Card.Model = stringPtr(profileDefinedSentinel)
+		doc.Card.Effort = nil
+	} else {
+		doc.Card.Engine = stringPtr(resolvedOpts.Engine)
+		doc.Card.Model = stringPtr(resolvedOpts.Model)
+		if resolvedOpts.Effort != "" {
+			doc.Card.Effort = stringPtr(resolvedOpts.Effort)
+		} else {
+			doc.Card.Effort = nil
+		}
 	}
-	postDoc.Card.DispatchID = &dispatchResult.DispatchID
+	doc.Card.DispatchID = &dispatchResult.DispatchID
+	now := timestamp()
+	doc.Card.DispatchedAt = &now
+	// session_id is not in the async_started response; leave nil for
+	// reconcile to backfill via agent-mux status.
 	if dispatchResult.SessionID != "" {
-		postDoc.Card.SessionID = &dispatchResult.SessionID
+		doc.Card.SessionID = &dispatchResult.SessionID
+	}
+	// Clear stale outcome from previous attempts.
+	if fsmResult.ClearLastOutcome {
+		doc.Card.LastAttemptOutcome = nil
 	}
 
-	appendLog(postDoc, fmt.Sprintf("dispatch_id=%s session_id=%s", dispatchResult.DispatchID, dispatchResult.SessionID))
+	logEngine := valueOrBlank(doc.Card.Engine)
+	logModel := valueOrBlank(doc.Card.Model)
+	logEffort := valueOrBlank(doc.Card.Effort)
+	appendLog(doc, fmt.Sprintf("dispatched -- %s/%s/%s dispatch_id=%s profile=%s", logEngine, logModel, logEffort, dispatchResult.DispatchID, resolvedOpts.Profile))
 
-	if err := postDoc.WriteFile(path); err != nil {
+	if err := doc.WriteFile(path); err != nil {
 		return nil, err
 	}
 
 	return dispatchResult, nil
 }
 
-func resolveDispatchOptions(card frontmatter.Card, opts dispatch.DispatchOptions, cfg config.Config) (dispatch.DispatchOptions, error) {
-	resolved := dispatch.DispatchOptions{
-		Profile: firstNonEmpty(opts.Profile, valueOrBlank(card.Profile), cfg.Defaults.Profile),
-		Engine:  firstNonEmpty(opts.Engine, valueOrBlank(card.Engine), cfg.Defaults.Engine),
-		Model:   firstNonEmpty(opts.Model, valueOrBlank(card.Model), cfg.Defaults.Model),
-		Effort:  firstNonEmpty(opts.Effort, valueOrBlank(card.Effort), cfg.Defaults.Effort),
-		WorkDir: firstNonEmpty(opts.WorkDir, valueOrBlank(card.WorkDir), cfg.Defaults.WorkDir),
+func resolveDispatchOptions(baseDir string, card frontmatter.Card, opts dispatch.DispatchOptions, cfg config.Config) (dispatch.DispatchOptions, error) {
+	repoRoot, err := config.RepoRoot()
+	if err != nil {
+		return dispatch.DispatchOptions{}, err
+	}
+	skills := card.Skills
+	if len(opts.Skills) > 0 {
+		skills = opts.Skills
 	}
 
-	// Skills are additive: config defaults + card frontmatter + CLI flags.
-	var skills []string
-	skills = append(skills, cfg.Defaults.Skills...)
-	skills = append(skills, card.Skills...)
-	skills = append(skills, opts.Skills...)
-	resolved.Skills = skills
+	// Look up initiative-level default_profile.
+	var initProfile string
+	if card.Initiative != "" {
+		initPath := filepath.Join(baseDir, "INITIATIVES", card.Initiative+".md")
+		initDoc, err := frontmatter.ParseFile(initPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "⚠ warning: could not read initiative %q default_profile: %v — falling back to global default\n", card.Initiative, err)
+		} else {
+			initProfile = valueOrBlank(initDoc.Card.DefaultProfile)
+			if initProfile == "" {
+				fmt.Fprintf(os.Stderr, "⚠ warning: initiative %q has no default_profile — using global default %q\n", card.Initiative, cfg.Defaults.Profile)
+			}
+		}
+	}
 
+	// Resolve each field through the cascade: CLI -> card -> initiative(profile only) -> config.
+	// Track which source won for each field.
+	profileVal, profileSrc := resolveWithSource(
+		opts.Profile, valueOrBlank(card.Profile), initProfile, cfg.Defaults.Profile,
+	)
+	engineVal, engineSrc := resolveWithSource(
+		opts.Engine, valueOrBlank(card.Engine), "", cfg.Defaults.Engine,
+	)
+	modelVal, modelSrc := resolveWithSource(
+		opts.Model, valueOrBlank(card.Model), "", cfg.Defaults.Model,
+	)
+	effortVal, effortSrc := resolveWithSource(
+		opts.Effort, valueOrBlank(card.Effort), "", cfg.Defaults.Effort,
+	)
+
+	resolved := dispatch.DispatchOptions{
+		Profile:       profileVal,
+		Engine:        engineVal,
+		Model:         modelVal,
+		Effort:        effortVal,
+		WorkDir:       repoRoot,
+		Skills:        skills,
+		ProfileSource: profileSrc,
+		EngineSource:  engineSrc,
+		ModelSource:   modelSrc,
+		EffortSource:  effortSrc,
+	}
 	if resolved.Profile == "" {
 		return dispatch.DispatchOptions{}, fmt.Errorf("dispatch requires profile via --profile, ticket frontmatter, or .tickets.toml defaults")
 	}
@@ -240,6 +267,31 @@ func resolveDispatchOptions(card frontmatter.Card, opts dispatch.DispatchOptions
 		return dispatch.DispatchOptions{}, fmt.Errorf("dispatch requires engine and model via flags, ticket frontmatter, or .tickets.toml defaults")
 	}
 	return resolved, nil
+}
+
+// profileDefinedSentinel is written to card frontmatter when engine/model/effort
+// are omitted from dispatch and left to the profile. On re-dispatch it must be
+// treated as empty so the resolve cascade falls through to config defaults
+// instead of passing the literal sentinel to agent-mux.
+const profileDefinedSentinel = "profile-defined"
+
+// resolveWithSource picks the first non-empty value from the cascade and
+// returns which source it came from:
+//   cli (flag) -> card (frontmatter) -> initiative -> config (global default)
+func resolveWithSource(cli, card, initiative, cfg string) (string, dispatch.OptionSource) {
+	if strings.TrimSpace(cli) != "" {
+		return cli, dispatch.SourceCLI
+	}
+	if v := strings.TrimSpace(card); v != "" && v != profileDefinedSentinel {
+		return card, dispatch.SourceCard
+	}
+	if strings.TrimSpace(initiative) != "" {
+		return initiative, dispatch.SourceInitiative
+	}
+	if strings.TrimSpace(cfg) != "" {
+		return cfg, dispatch.SourceConfig
+	}
+	return "", dispatch.SourceNone
 }
 
 func dispatchPreamble(doc *frontmatter.Document) string {
@@ -254,16 +306,6 @@ func dispatchPreamble(doc *frontmatter.Document) string {
 	)
 }
 
-func firstNonEmpty(values ...string) string {
-	for _, value := range values {
-		if strings.TrimSpace(value) != "" {
-			return value
-		}
-	}
-
-	return ""
-}
-
 func stringPtr(s string) *string {
 	return &s
 }
@@ -273,16 +315,4 @@ func valueOrBlank(s *string) string {
 		return ""
 	}
 	return *s
-}
-
-// stringSliceFlag implements flag.Value for repeatable string flags.
-type stringSliceFlag []string
-
-func (f *stringSliceFlag) String() string {
-	return strings.Join(*f, ",")
-}
-
-func (f *stringSliceFlag) Set(value string) error {
-	*f = append(*f, value)
-	return nil
 }
