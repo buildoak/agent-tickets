@@ -55,6 +55,7 @@ tags: [research, compression]
 created: "2026-04-12"
 skills: [web-search]
 depends_on: []
+awaits: []          # soft dependencies (terminal-state gating)
 ---
 
 ## Context
@@ -73,6 +74,13 @@ Not step-by-step instructions — the worker decides how.
 ```
 
 Optional frontmatter fields used by the runtime include `plan_ref`, `profile`, `dispatch_id`, `session_id`, `dispatched_at`, `last_attempt_outcome`, and `block_reason`.
+
+### Dependencies
+
+- `depends_on: [A, B]` — hard gate. All listed tickets must reach `done` before dispatch.
+- `awaits: [A, B]` — soft gate. All listed tickets must reach any terminal state (`done`, `failed`, `blocked`, `closed`).
+
+Use `depends_on` when you need upstream output. Use `awaits` when you need upstream completion regardless of outcome (audits, reports, cleanup). Both fields can coexist; both must be satisfied.
 
 ## State Machine
 
@@ -103,6 +111,8 @@ failed ──reopen──> open
 | `blocked` | Stuck on external dependency or needs human input |
 | `closed` | Conceptually dead — never retry (distinct from failed) |
 
+**Terminal states** (for `awaits` gating): `done`, `failed`, `blocked`, `closed`. **Non-terminal:** `open`, `dispatched`.
+
 Auto-block: after `max_retry` (default 3) consecutive failures, ticket auto-blocks.
 
 ## CLI Reference
@@ -111,7 +121,7 @@ Auto-block: after `max_retry` (default 3) consecutive failures, ticket auto-bloc
 
 | Command | Description |
 |---------|-------------|
-| `create` | Create a new ticket card under an initiative |
+| `create` | Create a new ticket card under an initiative (`--awaits A,B` for soft deps) |
 | `dispatch` | Dispatch ticket(s) to agent-mux workers |
 | `complete` | Mark dispatched ticket as done (called by worker) |
 | `fail` | Mark dispatched ticket as failed with reason (called by worker) |
@@ -126,7 +136,7 @@ Auto-block: after `max_retry` (default 3) consecutive failures, ticket auto-bloc
 |---------|-------------|
 | `tick` | One automation cycle: reconcile + stall-detect + dispatch-ready |
 | `reconcile` | Sync dispatched tickets with agent-mux status, trusting `## Result` over raw exit status when they disagree |
-| `dispatch-ready` | Auto-dispatch eligible open tickets (deps met, scope filled) |
+| `dispatch-ready` | Auto-dispatch eligible open tickets (hard + soft deps met, scope filled) |
 
 Stall detection runs inside `tick`: dispatched tickets that exceed their timeout are warned with `[STALL_WARNING]` and auto-failed. Timeouts come from per-tier defaults, can be overridden per initiative in config, and fall back to the last `dispatched --` log timestamp if `dispatched_at` is missing.
 
@@ -136,7 +146,7 @@ Stall detection runs inside `tick`: dispatched tickets that exceed their timeout
 |---------|-------------|
 | `show` | Display a single ticket (raw or JSON) |
 | `list` | List tickets with filters |
-| `board` | Kanban-style board view |
+| `board` | Kanban-style board view (shows `(awaits)` suffix for unresolved soft deps) |
 | `summary` | Status counts by initiative (agent-friendly, ~100 tokens) |
 | `initiatives` | List all initiatives with ticket counts |
 

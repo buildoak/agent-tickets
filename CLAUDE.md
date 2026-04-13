@@ -35,6 +35,8 @@ Tests live in `cmd/tickets/main_test.go` — integration-style, exercise the ful
 
 6. **Engine flag gating.** `ShouldPassEngineFlags()` returns true only when engine comes from CLI or card level. When engine falls to config defaults and a profile is set from a higher source, engine/model/effort flags are suppressed — letting the profile define them.
 
+7. **Terminal-state gating for `awaits`.** `IsTerminal()` returns true for `done`, `failed`, `blocked`, `closed`. `awaits` gates on terminality (any terminal state clears the dependency); `depends_on` gates on success (`done` only). Both fields can coexist; both must be satisfied before dispatch.
+
 ## How to Add a New Command
 
 1. Create `cmd/tickets/newcmd.go` with `func runNewCmd(cfg *config.Config, args []string) error`
@@ -74,6 +76,7 @@ type Card struct {
     // Planning
     PlanRef                *string
     DependsOn              []string
+    Awaits                 []string
     Skills                 []string
 
     // Dispatch
@@ -106,6 +109,8 @@ type Card struct {
 | `failed` | reopen -> `open`, block -> `blocked`, close -> `closed` |
 | `blocked` | reopen -> `open` |
 | `closed` | _(terminal — no outgoing transitions)_ |
+
+**Terminal states** (for `awaits` gating): `done`, `failed`, `blocked`, `closed`. **Non-terminal:** `open`, `dispatched`.
 
 ## Automation Notes
 

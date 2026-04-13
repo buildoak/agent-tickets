@@ -22,7 +22,7 @@ Run all CLI commands from repo root: `/Users/otonashi/thinking/pratchett-os/`
 - Initiatives: `centerpiece/tickets/INITIATIVES/{NAME}.md`
 - Config: `.tickets.toml` (repo root)
 
-**Card format:** YAML frontmatter (`id`, `initiative`, `title`, `status`, `tier`, `tags`, `created`, `manual`, `plan_ref`, `depends_on`, `skills`, `dispatch_id`, `session_id`, `dispatched_at`, `profile`, `engine`, `model`, `effort`, `last_attempt_outcome`, `block_reason`) + four sections: `## Context`, `## Scope`, `## Result`, `## Log`.
+**Card format:** YAML frontmatter (`id`, `initiative`, `title`, `status`, `tier`, `tags`, `created`, `manual`, `plan_ref`, `depends_on`, `awaits`, `skills`, `dispatch_id`, `session_id`, `dispatched_at`, `profile`, `engine`, `model`, `effort`, `last_attempt_outcome`, `block_reason`) + four sections: `## Context`, `## Scope`, `## Result`, `## Log`.
 
 **IDs:** `{INITIATIVE}-{seq:03d}` (e.g., RECON-009, SERENDIPITY-003). Per-initiative sequencing.
 
@@ -38,13 +38,23 @@ Run all CLI commands from repo root: `/Users/otonashi/thinking/pratchett-os/`
 | `closed` | _(terminal — no outgoing transitions)_ |
 
 - `closed` = conceptually dead, never retry. Use for tickets that are no longer relevant, duplicate, or impossible. Distinct from `failed` (operationally broken but retryable).
+- **Terminal states:** `done`, `failed`, `blocked`, `closed`. Non-terminal: `open`, `dispatched`. `IsTerminal()` returns true for the four terminal states.
 - Auto-block: after `max_retry` (default 3) consecutive failures, ticket auto-blocks.
+
+**Dependency semantics — `depends_on` vs `awaits`:**
+
+| Field | Gate type | Dispatches when | Use case |
+|-------|-----------|-----------------|----------|
+| `depends_on` | Hard — "I need their output" | All listed tickets reach `done` | Build depends on design spec |
+| `awaits` | Soft — "I need them finished" | All listed tickets reach any terminal state (`done`, `failed`, `blocked`, `closed`) | Audits, reports, cleanup, aggregation |
+
+Both fields can coexist on one ticket; both must be satisfied before dispatch. Missing `awaits` normalizes to `[]` (backward compatible).
 
 **CLI by actor:**
 
 | Coordinator | Scheduler | Worker |
 |-------------|-----------|--------|
-| `create --initiative X --title "..." --tier worker` | `tick [--max-dispatch N]` | `complete <ID>` |
+| `create --initiative X --title "..." --tier worker [--awaits A,B]` | `tick [--max-dispatch N]` | `complete <ID>` |
 | `dispatch <ID>[,ID...] [--profile --engine --model --effort]` | `reconcile [--dry-run]` | `fail <ID> --reason "..."` |
 | `dispatch-ready [--max N] [--dry-run]` | `dispatch-ready [--max N]` | `show <ID>` |
 | `show <ID>`, `list`, `board`, `initiatives` | | |
@@ -249,7 +259,7 @@ Use `--dry-run` before real dispatch when batch size > 3 or when unsure about re
 
 ### Full views (human-facing, ~2k+ tokens)
 
-`tickets board` — full kanban view, all tickets. Use `--status` or `--initiative` to filter.
+`tickets board` — full kanban view, all tickets. Use `--status` or `--initiative` to filter. Tickets with unresolved soft dependencies show an `(awaits)` suffix to distinguish them from hard-dep blocks.
 `tickets list --status dispatched` — all currently running tickets.
 `tickets show <ID>` — full card with dispatch fields and log.
 
@@ -307,3 +317,18 @@ The tick scheduler (`tickets tick` via LaunchAgent) runs `dispatch-ready` which 
 9. Reconcile handles completion. Review result on the card.
 
 **Why this matters:** Codex kills processes with SIGTERM when too many instances launch simultaneously. Bulk manual dispatches (7+ at once) cause instant `killed_by_user` failures with 0 tokens consumed. The scheduler's stagger and caps prevent this.
+
+---
+
+## 6. GUARDIAN Audit Initiative
+
+GUARDIAN is an audit initiative that uses standard ticket mechanics — no special infrastructure. GUARDIAN tickets use `awaits` (not `depends_on`) to point at batches of ~10 target tickets. This means a GUARDIAN ticket dispatches once all its targets reach any terminal state, regardless of whether they succeeded or failed.
+
+**How it works:**
+1. A GUARDIAN ticket is filed `open` with `awaits: [PAPER-OPS-101, PAPER-OPS-102, ...]` listing ~10 target ticket IDs.
+2. The scheduler's `dispatch-ready` checks the `awaits` gate: all listed tickets must be terminal (`done`, `failed`, `blocked`, or `closed`).
+3. Once the gate clears, the GUARDIAN ticket dispatches automatically like any other ticket.
+4. The guardian-worker runs a pre-flight status check on each target as defense-in-depth: `done` tickets get audited, `failed`/`blocked`/`closed` are SKIPPED, `open`/`dispatched` are PENDING (should not happen if awaits gating worked correctly).
+5. GUARDIAN tickets are configured in `[guardian]` in `.tickets.toml` (engine, model, profile, initiative).
+
+**Coordinator role:** Create the GUARDIAN ticket with `--awaits` listing the target batch, file it `open`, and let the scheduler handle the rest. No manual dispatch needed.
