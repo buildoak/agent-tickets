@@ -2027,6 +2027,81 @@ func TestCreateWithAwaits(t *testing.T) {
 	}
 }
 
+func TestMigrateUpdatesAwaits(t *testing.T) {
+	baseDir := t.TempDir()
+	t.Setenv("TICKETS_BASE_DIR", baseDir)
+
+	mustRun(t, "init", "RECON", "--title", "Recon")
+	mustRun(t, "init", "STARK", "--title", "Stark")
+
+	a := strings.TrimSpace(mustRunStdout(t, "create", "--initiative", "RECON", "--title", "Awaited", "--tier", "worker"))
+	b := strings.TrimSpace(mustRunStdout(t, "create", "--initiative", "RECON", "--title", "Awaiter", "--tier", "worker", "--awaits", a))
+
+	mustRun(t, "migrate", a, "STARK")
+
+	bDoc := mustParseTicket(t, baseDir, b)
+	if len(bDoc.Card.Awaits) != 1 || bDoc.Card.Awaits[0] != "STARK-001" {
+		t.Fatalf("awaits should reference STARK-001 after migrate, got %#v", bDoc.Card.Awaits)
+	}
+}
+
+func TestBoardAwaitsAnnotation(t *testing.T) {
+	baseDir := t.TempDir()
+	t.Setenv("TICKETS_BASE_DIR", baseDir)
+
+	mustRun(t, "init", "ALPHA", "--title", "Alpha")
+	awaited := strings.TrimSpace(mustRunStdout(t, "create", "--initiative", "ALPHA", "--title", "Awaited open", "--tier", "worker"))
+	strings.TrimSpace(mustRunStdout(t, "create", "--initiative", "ALPHA", "--title", "Waiting child", "--tier", "worker", "--awaits", awaited))
+
+	out := mustRunStdout(t, "board")
+	if !strings.Contains(out, "(awaits)") {
+		t.Fatalf("board should show (awaits) suffix for unresolved awaits: %s", out)
+	}
+}
+
+func TestDispatchRejectsNonTerminalAwaits(t *testing.T) {
+	baseDir := t.TempDir()
+	t.Setenv("TICKETS_BASE_DIR", baseDir)
+	withMockDispatcher(t, &dispatch.MockDispatcher{})
+
+	mustRun(t, "init", "ALPHA", "--title", "Alpha")
+	awaited := strings.TrimSpace(mustRunStdout(t, "create", "--initiative", "ALPHA", "--title", "Awaited open", "--tier", "worker"))
+	child := strings.TrimSpace(mustRunStdout(t, "create", "--initiative", "ALPHA", "--title", "Child", "--tier", "worker", "--awaits", awaited))
+
+	err := run([]string{"dispatch", child, "--engine", "codex", "--model", "gpt-5.4"})
+	if err == nil || !strings.Contains(err.Error(), "awaited ticket") {
+		t.Fatalf("expected awaited ticket error, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "not terminal") {
+		t.Fatalf("expected 'not terminal' in error, got %v", err)
+	}
+}
+
+func TestCreateRejectsCircularAwaits(t *testing.T) {
+	baseDir := t.TempDir()
+	t.Setenv("TICKETS_BASE_DIR", baseDir)
+
+	mustRun(t, "init", "ALPHA", "--title", "Alpha")
+	a := strings.TrimSpace(mustRunStdout(t, "create", "--initiative", "ALPHA", "--title", "A", "--tier", "worker"))
+	b := strings.TrimSpace(mustRunStdout(t, "create", "--initiative", "ALPHA", "--title", "B", "--tier", "worker", "--awaits", a))
+
+	// Make A await B — this creates a cycle through awaits: A awaits B, B awaits A.
+	doc := mustParseTicket(t, baseDir, a)
+	doc.Card.Awaits = []string{b}
+	writeTicket(t, baseDir, a, doc)
+
+	err := run([]string{"create", "--initiative", "ALPHA", "--title", "Cycle via awaits", "--tier", "worker", "--awaits", b})
+	if err == nil || !strings.Contains(err.Error(), "circular dependency detected") {
+		t.Fatalf("expected circular dependency error for awaits cycle, got %v", err)
+	}
+
+	// Also test self-referencing: A awaits A.
+	errSelf := run([]string{"create", "--initiative", "ALPHA", "--title", "Self-awaits", "--tier", "worker", "--awaits", a})
+	if errSelf == nil || !strings.Contains(errSelf.Error(), "circular dependency detected") {
+		t.Fatalf("expected circular dependency error for self-awaits, got %v", errSelf)
+	}
+}
+
 func mustRun(t *testing.T, args ...string) {
 	t.Helper()
 	makeDispatchCommandsReady(t, args...)

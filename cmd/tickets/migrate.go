@@ -128,9 +128,13 @@ func cmdMigrate(args []string) error {
 		return err
 	}
 	delete(graph, id)
-	graph[newID] = append([]string(nil), doc.Card.DependsOn...)
+	edges := append([]string(nil), doc.Card.DependsOn...)
+	edges = append(edges, doc.Card.Awaits...)
+	graph[newID] = edges
 	for _, update := range updates {
-		graph[update.id] = append([]string(nil), update.doc.Card.DependsOn...)
+		uEdges := append([]string(nil), update.doc.Card.DependsOn...)
+		uEdges = append(uEdges, update.doc.Card.Awaits...)
+		graph[update.id] = uEdges
 	}
 
 	if err := validateDependencyGraph(graph, newID, doc.Card.DependsOn); err != nil {
