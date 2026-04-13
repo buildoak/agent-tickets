@@ -295,6 +295,9 @@ func dependentMap(baseDir string) (map[string][]string, error) {
 		for _, dep := range doc.Card.DependsOn {
 			dependents[dep] = append(dependents[dep], doc.Card.ID)
 		}
+		for _, aw := range doc.Card.Awaits {
+			dependents[aw] = append(dependents[aw], doc.Card.ID)
+		}
 	}
 
 	for key := range dependents {
@@ -337,7 +340,9 @@ func buildDepGraph(baseDir string) (map[string][]string, error) {
 		if err != nil {
 			continue
 		}
-		graph[doc.Card.ID] = append([]string(nil), doc.Card.DependsOn...)
+		edges := append([]string(nil), doc.Card.DependsOn...)
+		edges = append(edges, doc.Card.Awaits...)
+		graph[doc.Card.ID] = edges
 	}
 
 	return graph, nil

@@ -108,6 +108,9 @@ func cloneCard(card Card) Card {
 	if card.DependsOn != nil {
 		cloned.DependsOn = append([]string(nil), card.DependsOn...)
 	}
+	if card.Awaits != nil {
+		cloned.Awaits = append([]string(nil), card.Awaits...)
+	}
 	cloned.PlanRef = cloneStringPtr(card.PlanRef)
 	cloned.DispatchID = cloneStringPtr(card.DispatchID)
 	cloned.SessionID = cloneStringPtr(card.SessionID)

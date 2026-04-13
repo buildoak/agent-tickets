@@ -53,6 +53,7 @@ var cardFieldOrder = []string{
 	"manual",
 	"plan_ref",
 	"depends_on",
+	"awaits",
 	"dispatch_id",
 	"session_id",
 	"profile",
@@ -141,6 +142,8 @@ func marshalCardField(key string, card Card) ([]byte, error) {
 		value = card.PlanRef
 	case "depends_on":
 		value = card.DependsOn
+	case "awaits":
+		value = card.Awaits
 	case "dispatch_id":
 		value = card.DispatchID
 	case "session_id":
@@ -216,6 +219,8 @@ func cardFieldEqual(key string, a, b Card) bool {
 		return reflect.DeepEqual(a.PlanRef, b.PlanRef)
 	case "depends_on":
 		return reflect.DeepEqual(a.DependsOn, b.DependsOn)
+	case "awaits":
+		return reflect.DeepEqual(a.Awaits, b.Awaits)
 	case "dispatch_id":
 		return reflect.DeepEqual(a.DispatchID, b.DispatchID)
 	case "session_id":
@@ -251,6 +256,9 @@ func normalizeCardSlices(card *Card) {
 	}
 	if card.DependsOn == nil {
 		card.DependsOn = []string{}
+	}
+	if card.Awaits == nil {
+		card.Awaits = []string{}
 	}
 	if card.Skills == nil {
 		card.Skills = []string{}

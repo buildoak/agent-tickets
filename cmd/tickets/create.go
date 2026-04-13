@@ -21,11 +21,12 @@ func cmdCreate(args []string) error {
 	tier := fs.String("tier", "", "ticket tier")
 	manual := fs.Bool("manual", false, "manual ticket")
 	dependsOn := fs.String("depends-on", "", "comma-separated dependencies")
+	awaits := fs.String("awaits", "", "comma-separated soft dependencies (terminal-state gating)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if fs.NArg() != 0 {
-		return fmt.Errorf("usage: tickets create --initiative X --title \"...\" --tier worker [--manual] [--depends-on A,B]")
+		return fmt.Errorf("usage: tickets create --initiative X --title \"...\" --tier worker [--manual] [--depends-on A,B] [--awaits A,B]")
 	}
 	if strings.TrimSpace(*initiative) == "" {
 		return fmt.Errorf("--initiative is required")
@@ -64,6 +65,12 @@ func cmdCreate(args []string) error {
 			return err
 		}
 	}
+	awaitsList := splitCSV(*awaits)
+	if len(awaitsList) > 0 {
+		if err := validateDependencies(baseDir, id, awaitsList); err != nil {
+			return err
+		}
+	}
 
 	doc := ticketTemplate(frontmatter.Card{
 		ID:         id,
@@ -75,6 +82,7 @@ func cmdCreate(args []string) error {
 		Created:    dateOnly(),
 		Manual:     *manual,
 		DependsOn:  deps,
+		Awaits:     awaitsList,
 		Attempts:   0,
 	})
 	appendLog(doc, "open -- created")

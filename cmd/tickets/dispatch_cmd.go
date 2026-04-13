@@ -121,6 +121,15 @@ func dispatchTicket(baseDir, id string, d dispatch.Dispatcher, cfg config.Config
 			return nil, fmt.Errorf("dependency %s is not done", dep)
 		}
 	}
+	for _, aw := range doc.Card.Awaits {
+		_, awDoc, err := loadTicket(baseDir, aw)
+		if err != nil {
+			return nil, fmt.Errorf("awaits %s: %w", aw, err)
+		}
+		if !awDoc.Card.Status.IsTerminal() {
+			return nil, fmt.Errorf("awaited ticket %s is not terminal (status: %s)", aw, awDoc.Card.Status)
+		}
+	}
 	if strings.TrimSpace(doc.GetSection("Scope")) == "" {
 		return nil, fmt.Errorf("ticket must include a non-empty ## Scope section before dispatch")
 	}

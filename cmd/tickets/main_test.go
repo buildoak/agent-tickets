@@ -1875,6 +1875,158 @@ func TestCreateRefusesOverwriteOnRace(t *testing.T) {
 	}
 }
 
+func TestDispatchReadyAwaitsTerminal(t *testing.T) {
+	baseDir := t.TempDir()
+	t.Setenv("TICKETS_BASE_DIR", baseDir)
+	writeConfigFile(t, baseDir, "[defaults]\nengine = \"codex\"\nmodel = \"gpt-5.4-mini\"\neffort = \"medium\"\nprofile = \"batch\"\n")
+	withWorkingDir(t, baseDir)
+
+	var dispatched []string
+	withMockDispatcher(t, &dispatch.MockDispatcher{
+		DispatchFunc: func(opts dispatch.DispatchOptions) (*dispatch.DispatchResult, error) {
+			dispatched = append(dispatched, strings.TrimSuffix(filepath.Base(opts.TicketPath), ".md"))
+			return &dispatch.DispatchResult{
+				DispatchID: fmt.Sprintf("dispatch-%d", len(dispatched)),
+				SessionID:  fmt.Sprintf("session-%d", len(dispatched)),
+			}, nil
+		},
+	})
+
+	mustRun(t, "init", "ALPHA", "--title", "Alpha")
+	awaited := strings.TrimSpace(mustRunStdout(t, "create", "--initiative", "ALPHA", "--title", "Awaited ticket", "--tier", "worker"))
+	child := strings.TrimSpace(mustRunStdout(t, "create", "--initiative", "ALPHA", "--title", "Child awaits", "--tier", "worker", "--awaits", awaited))
+
+	// Awaited ticket is open — child should NOT dispatch.
+	mustRun(t, "dispatch-ready", "--max", "5")
+	childDoc := mustParseTicket(t, baseDir, child)
+	// Only the awaited ticket should have been dispatched, not the child.
+	if childDoc.Card.Status != frontmatter.StatusOpen {
+		t.Fatalf("expected child to remain open while awaited is non-terminal, got %s", childDoc.Card.Status)
+	}
+
+	// Now make the awaited ticket terminal (failed counts as terminal).
+	awaitedDoc := mustParseTicket(t, baseDir, awaited)
+	awaitedDoc.Card.Status = frontmatter.StatusFailed
+	awaitedDoc.Card.LastAttemptOutcome = stringPtr("failed")
+	writeTicket(t, baseDir, awaited, awaitedDoc)
+	dispatched = nil
+
+	mustRun(t, "dispatch-ready", "--max", "5")
+	childDoc = mustParseTicket(t, baseDir, child)
+	if childDoc.Card.Status != frontmatter.StatusDispatched {
+		t.Fatalf("expected child dispatched when awaited is terminal (failed), got %s", childDoc.Card.Status)
+	}
+}
+
+func TestDispatchReadyAwaitsBlocksOnNonTerminal(t *testing.T) {
+	baseDir := t.TempDir()
+	t.Setenv("TICKETS_BASE_DIR", baseDir)
+	writeConfigFile(t, baseDir, "[defaults]\nengine = \"codex\"\nmodel = \"gpt-5.4-mini\"\neffort = \"medium\"\nprofile = \"batch\"\n")
+	withWorkingDir(t, baseDir)
+
+	withMockDispatcher(t, &dispatch.MockDispatcher{})
+
+	mustRun(t, "init", "ALPHA", "--title", "Alpha")
+	awaited := strings.TrimSpace(mustRunStdout(t, "create", "--initiative", "ALPHA", "--title", "Awaited", "--tier", "worker"))
+	child := strings.TrimSpace(mustRunStdout(t, "create", "--initiative", "ALPHA", "--title", "Blocked child", "--tier", "worker", "--awaits", awaited))
+
+	// Dispatch awaited, making it "dispatched" (non-terminal).
+	mustRun(t, "dispatch", awaited, "--engine", "codex", "--model", "gpt-5.4-mini")
+
+	// dispatch-ready should NOT dispatch child because awaited is dispatched (non-terminal).
+	out := mustRunStdout(t, "dispatch-ready", "--dry-run", "--max", "5")
+	if strings.Contains(out, child) {
+		t.Fatalf("child should not be eligible when awaited is dispatched: %s", out)
+	}
+}
+
+func TestDispatchReadyBothDependsOnAndAwaits(t *testing.T) {
+	baseDir := t.TempDir()
+	t.Setenv("TICKETS_BASE_DIR", baseDir)
+	writeConfigFile(t, baseDir, "[defaults]\nengine = \"codex\"\nmodel = \"gpt-5.4-mini\"\neffort = \"medium\"\nprofile = \"batch\"\n")
+	withWorkingDir(t, baseDir)
+
+	var dispatched []string
+	withMockDispatcher(t, &dispatch.MockDispatcher{
+		DispatchFunc: func(opts dispatch.DispatchOptions) (*dispatch.DispatchResult, error) {
+			dispatched = append(dispatched, strings.TrimSuffix(filepath.Base(opts.TicketPath), ".md"))
+			return &dispatch.DispatchResult{
+				DispatchID: fmt.Sprintf("dispatch-%d", len(dispatched)),
+				SessionID:  fmt.Sprintf("session-%d", len(dispatched)),
+			}, nil
+		},
+	})
+
+	mustRun(t, "init", "ALPHA", "--title", "Alpha")
+	dep := strings.TrimSpace(mustRunStdout(t, "create", "--initiative", "ALPHA", "--title", "Hard dep", "--tier", "worker"))
+	awaited := strings.TrimSpace(mustRunStdout(t, "create", "--initiative", "ALPHA", "--title", "Soft dep", "--tier", "worker"))
+
+	// Make dep done and awaited blocked (terminal).
+	depDoc := mustParseTicket(t, baseDir, dep)
+	depDoc.Card.Status = frontmatter.StatusDone
+	writeTicket(t, baseDir, dep, depDoc)
+
+	awaitedDoc := mustParseTicket(t, baseDir, awaited)
+	awaitedDoc.Card.Status = frontmatter.StatusBlocked
+	reason := "manual hold"
+	awaitedDoc.Card.BlockReason = &reason
+	writeTicket(t, baseDir, awaited, awaitedDoc)
+
+	// Create child with both depends_on and awaits.
+	child := strings.TrimSpace(mustRunStdout(t, "create", "--initiative", "ALPHA", "--title", "Both deps", "--tier", "worker", "--depends-on", dep, "--awaits", awaited))
+	dispatched = nil
+
+	mustRun(t, "dispatch-ready", "--max", "5")
+	childDoc := mustParseTicket(t, baseDir, child)
+	if childDoc.Card.Status != frontmatter.StatusDispatched {
+		t.Fatalf("expected child dispatched when both depends_on (done) and awaits (blocked=terminal) are met, got %s", childDoc.Card.Status)
+	}
+}
+
+func TestDispatchReadyDependsOnBlocksEvenIfAwaitsReady(t *testing.T) {
+	baseDir := t.TempDir()
+	t.Setenv("TICKETS_BASE_DIR", baseDir)
+	writeConfigFile(t, baseDir, "[defaults]\nengine = \"codex\"\nmodel = \"gpt-5.4-mini\"\neffort = \"medium\"\nprofile = \"batch\"\n")
+	withWorkingDir(t, baseDir)
+
+	withMockDispatcher(t, &dispatch.MockDispatcher{})
+
+	mustRun(t, "init", "ALPHA", "--title", "Alpha")
+	dep := strings.TrimSpace(mustRunStdout(t, "create", "--initiative", "ALPHA", "--title", "Hard dep (open)", "--tier", "worker"))
+	awaited := strings.TrimSpace(mustRunStdout(t, "create", "--initiative", "ALPHA", "--title", "Soft dep (done)", "--tier", "worker"))
+
+	// Awaited is done (terminal), but dep is still open (not done).
+	awaitedDoc := mustParseTicket(t, baseDir, awaited)
+	awaitedDoc.Card.Status = frontmatter.StatusDone
+	writeTicket(t, baseDir, awaited, awaitedDoc)
+
+	child := strings.TrimSpace(mustRunStdout(t, "create", "--initiative", "ALPHA", "--title", "Blocked by dep", "--tier", "worker", "--depends-on", dep, "--awaits", awaited))
+
+	out := mustRunStdout(t, "dispatch-ready", "--dry-run", "--max", "5")
+	if strings.Contains(out, child) {
+		t.Fatalf("child should not be eligible when depends_on is not done, even if awaits is ready: %s", out)
+	}
+}
+
+func TestCreateWithAwaits(t *testing.T) {
+	baseDir := t.TempDir()
+	t.Setenv("TICKETS_BASE_DIR", baseDir)
+
+	mustRun(t, "init", "ALPHA", "--title", "Alpha")
+	a := strings.TrimSpace(mustRunStdout(t, "create", "--initiative", "ALPHA", "--title", "First", "--tier", "worker"))
+	b := strings.TrimSpace(mustRunStdout(t, "create", "--initiative", "ALPHA", "--title", "Second", "--tier", "worker"))
+
+	c := strings.TrimSpace(mustRunStdout(t, "create", "--initiative", "ALPHA", "--title", "Awaiter", "--tier", "worker", "--awaits", a+","+b))
+
+	doc := mustParseTicket(t, baseDir, c)
+	if len(doc.Card.Awaits) != 2 {
+		t.Fatalf("expected 2 awaits entries, got %d: %#v", len(doc.Card.Awaits), doc.Card.Awaits)
+	}
+	if doc.Card.Awaits[0] != a || doc.Card.Awaits[1] != b {
+		t.Fatalf("unexpected awaits values: %#v", doc.Card.Awaits)
+	}
+}
+
 func mustRun(t *testing.T, args ...string) {
 	t.Helper()
 	makeDispatchCommandsReady(t, args...)

@@ -8,7 +8,20 @@ const (
 	StatusDone       Status = "done"
 	StatusFailed     Status = "failed"
 	StatusBlocked    Status = "blocked"
+	StatusClosed     Status = "closed"
 )
+
+// IsTerminal returns true if the status is a terminal state (done, failed, blocked, closed).
+// Terminal states are used by the awaits dependency semantic — a ticket awaiting
+// another only needs the awaited ticket to reach any terminal state, not necessarily done.
+func (s Status) IsTerminal() bool {
+	switch s {
+	case StatusDone, StatusFailed, StatusBlocked, StatusClosed:
+		return true
+	default:
+		return false
+	}
+}
 
 type Tier string
 
@@ -38,6 +51,7 @@ type Card struct {
 	PlanRef *string `yaml:"plan_ref"`
 
 	DependsOn []string `yaml:"depends_on"`
+	Awaits    []string `yaml:"awaits"`
 
 	DispatchID *string `yaml:"dispatch_id"`
 	SessionID  *string `yaml:"session_id"`
