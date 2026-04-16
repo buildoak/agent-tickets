@@ -134,9 +134,11 @@ Auto-block: after `max_retry` (default 3) consecutive failures, ticket auto-bloc
 
 | Command | Description |
 |---------|-------------|
-| `tick` | One automation cycle: reconcile + stall-detect + dispatch-ready |
+| `tick` | One automation cycle: reconcile + stall-detect + dispatch-ready (with dir-mtime fast-path) |
 | `reconcile` | Sync dispatched tickets with agent-mux status, trusting `## Result` over raw exit status when they disagree |
 | `dispatch-ready` | Auto-dispatch eligible open tickets (hard + soft deps met, scope filled) |
+
+`tick` is cheap when the tree is idle. It stats the `cards/` tree mtime on wake and, if nothing changed since the persisted `.tick-state` cursor, exits with `tick: no-change skip`. A 9-minute stall-check cursor (independent of dir mtime) ensures slow workers don't hide behind an idle filesystem. When phases do run, cards are parsed exactly once and the slice is shared across reconcile/stall/dispatch-ready. Phases also early-exit when their precondition isn't met (no dispatched cards → skip reconcile; no open-ready cards → skip dispatch-ready).
 
 Stall detection runs inside `tick`: dispatched tickets that exceed their timeout are warned with `[STALL_WARNING]` and auto-failed. Timeouts come from per-tier defaults, can be overridden per initiative in config, and fall back to the last `dispatched --` log timestamp if `dispatched_at` is missing.
 
@@ -146,7 +148,7 @@ Stall detection runs inside `tick`: dispatched tickets that exceed their timeout
 |---------|-------------|
 | `show` | Display a single ticket (raw or JSON) |
 | `list` | List tickets with filters |
-| `board` | Kanban-style board view (shows `(awaits)` suffix for unresolved soft deps) |
+| `board` | Kanban-style board view (shows `(awaits)` suffix for unresolved soft deps; `done` annotation is blank) |
 | `summary` | Status counts by initiative (agent-friendly, ~100 tokens) |
 | `initiatives` | List all initiatives with ticket counts |
 

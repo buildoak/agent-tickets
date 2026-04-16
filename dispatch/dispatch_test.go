@@ -84,8 +84,8 @@ func TestMockDispatcherCustomStatusFunc(t *testing.T) {
 			}
 
 			return &StatusResult{
-				Status: "running",
-				Tokens: &TokenData{In: 10, Out: 5, Cache: 3, PeakContext: 42},
+				Status:    "running",
+				SessionID: "ses-abc",
 			}, nil
 		},
 	}
@@ -99,8 +99,8 @@ func TestMockDispatcherCustomStatusFunc(t *testing.T) {
 	}
 
 	if want := (&StatusResult{
-		Status: "running",
-		Tokens: &TokenData{In: 10, Out: 5, Cache: 3, PeakContext: 42},
+		Status:    "running",
+		SessionID: "ses-abc",
 	}); !reflect.DeepEqual(result, want) {
 		t.Fatalf("Status() = %#v, want %#v", result, want)
 	}

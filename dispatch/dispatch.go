@@ -8,11 +8,10 @@ type DispatchResult struct {
 
 // StatusResult holds the response from querying agent-mux status.
 type StatusResult struct {
-	Status    string     `json:"status"` // running, completed, failed, timeout
-	State     string     `json:"state"`  // agent-mux minimal schema uses "state" instead of "status"
-	SessionID string     `json:"session_id"`
-	Error     string     `json:"error"`
-	Tokens    *TokenData `json:"tokens"`
+	Status    string `json:"status"` // running, completed, failed, timeout
+	State     string `json:"state"`  // agent-mux minimal schema uses "state" instead of "status"
+	SessionID string `json:"session_id"`
+	Error     string `json:"error"`
 }
 
 // EffectiveStatus returns the resolved status, preferring the full-schema
@@ -23,13 +22,6 @@ func (s *StatusResult) EffectiveStatus() string {
 		return s.Status
 	}
 	return s.State
-}
-
-type TokenData struct {
-	In          int `json:"in"`
-	Out         int `json:"out"`
-	Cache       int `json:"cache"`
-	PeakContext int `json:"peak_context"`
 }
 
 // OptionSource indicates where a resolved option value came from.

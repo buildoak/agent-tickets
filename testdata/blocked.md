@@ -17,7 +17,6 @@ effort: xhigh
 attempts: 3
 last_attempt_outcome: failed
 block_reason: "Auto-blocked after 3 failed attempts"
-tokens: null
 ---
 
 ## Context

@@ -128,10 +128,6 @@ func cloneCard(card Card) Card {
 	if card.DefaultSkills != nil {
 		cloned.DefaultSkills = append([]string(nil), card.DefaultSkills...)
 	}
-	if card.Tokens != nil {
-		tokens := *card.Tokens
-		cloned.Tokens = &tokens
-	}
 	return cloned
 }
 

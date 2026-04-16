@@ -54,26 +54,6 @@ func cmdComplete(args []string) error {
 	}
 	doc.Card.Status = result.To
 
-	if doc.Card.DispatchID != nil {
-		d, err := getDispatcher()
-		if err == nil {
-			statusResult, err := d.Status(*doc.Card.DispatchID)
-			if err == nil && statusResult.Tokens != nil {
-				doc.Card.Tokens = &frontmatter.TokenUsage{
-					In:          statusResult.Tokens.In,
-					Out:         statusResult.Tokens.Out,
-					Cache:       statusResult.Tokens.Cache,
-					PeakContext: statusResult.Tokens.PeakContext,
-				}
-			}
-		}
-	} else {
-		fmt.Fprintf(stderr, "warning: dispatch_id missing on card %s, token backfill skipped\n", id)
-	}
-
 	appendLog(doc, "done -- completed")
-	if doc.Card.Tokens != nil {
-		appendLog(doc, fmt.Sprintf("tokens -- in=%d out=%d cache=%d peak_context=%d", doc.Card.Tokens.In, doc.Card.Tokens.Out, doc.Card.Tokens.Cache, doc.Card.Tokens.PeakContext))
-	}
 	return doc.WriteFile(path)
 }

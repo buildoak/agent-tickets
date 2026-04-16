@@ -34,6 +34,17 @@ func runReconcile(baseDir string) (int, error) {
 }
 
 func reconcileTickets(baseDir string, dryRun bool) (int, error) {
+	docs, err := loadAllTicketDocs(baseDir)
+	if err != nil {
+		return 0, err
+	}
+	return reconcileTicketsFromDocs(docs, dryRun)
+}
+
+// reconcileTicketsFromDocs reconciles against a pre-parsed slice of ticket
+// docs. Only running (StatusDispatched) cards trigger agent-mux status
+// queries; terminal cards (done/failed/blocked/closed) are ignored entirely.
+func reconcileTicketsFromDocs(docs []TicketDoc, dryRun bool) (int, error) {
 	d, err := getDispatcher()
 	if err != nil {
 		return 0, err
@@ -47,120 +58,73 @@ func reconcileTickets(baseDir string, dryRun bool) (int, error) {
 		maxStatusQueryFailures = 3
 	}
 
-	files, err := allTicketFiles(baseDir)
-	if err != nil {
-		return 0, err
-	}
-
 	actions := make([]string, 0)
-	for _, file := range files {
-		doc, err := frontmatter.ParseFile(file)
-		if err != nil {
+	for _, td := range docs {
+		doc := td.Doc
+		file := td.Path
+		if doc.Card.Status != frontmatter.StatusDispatched {
+			continue
+		}
+		if doc.Card.DispatchID == nil {
+			fmt.Fprintf(stderr, "warning: dispatch_id missing on dispatched card %s, skipping reconcile\n", doc.Card.ID)
 			continue
 		}
 
-		switch doc.Card.Status {
-		case frontmatter.StatusDispatched:
-			if doc.Card.DispatchID == nil {
-				fmt.Fprintf(stderr, "warning: dispatch_id missing on dispatched card %s, skipping reconcile\n", doc.Card.ID)
-				continue
-			}
-
-			statusResult, err := d.Status(*doc.Card.DispatchID)
-			if err != nil {
-				failureCount := consecutiveStatusQueryFailures(doc) + 1
-				message := fmt.Sprintf("agent-mux status query failed (%d/%d): %v", failureCount, maxStatusQueryFailures, err)
-				if failureCount < maxStatusQueryFailures {
-					appendLog(doc, "warning -- "+message)
-					if writeErr := doc.WriteFile(file); writeErr != nil {
-						return 0, writeErr
-					}
-					actions = append(actions, fmt.Sprintf("%s: warning: %s", doc.Card.ID, message))
-					continue
-				}
-				if dryRun {
-					actions = append(actions, fmt.Sprintf("Would fail %s: %s", doc.Card.ID, message))
-					continue
-				}
+		statusResult, err := d.Status(*doc.Card.DispatchID)
+		if err != nil {
+			failureCount := consecutiveStatusQueryFailures(doc) + 1
+			message := fmt.Sprintf("agent-mux status query failed (%d/%d): %v", failureCount, maxStatusQueryFailures, err)
+			if failureCount < maxStatusQueryFailures {
 				appendLog(doc, "warning -- "+message)
-				appendLog(doc, "note -- auto-failed due to status-check infrastructure failure, not confirmed worker failure")
-				action, failErr := failDuringReconcile(file, doc, nil, fmt.Sprintf("agent-mux status query failed repeatedly: %v", err), "failed -- "+message)
-				if failErr != nil {
-					return 0, failErr
+				if writeErr := doc.WriteFile(file); writeErr != nil {
+					return 0, writeErr
 				}
-				actions = append(actions, action)
-				fmt.Fprintf(stdout, "[STALL_WARNING] %s auto-failed due to status-check failure (infrastructure may be degraded)\n", doc.Card.ID)
+				actions = append(actions, fmt.Sprintf("%s: warning: %s", doc.Card.ID, message))
 				continue
 			}
-
-			// Backfill session_id when the status response provides one
-			// but the card doesn't have it yet (agent-mux --async only
-			// returns dispatch_id; session_id becomes available later).
-			sessionBackfilled := false
-			if statusResult.SessionID != "" && (doc.Card.SessionID == nil || *doc.Card.SessionID == "") {
-				if dryRun {
-					actions = append(actions, fmt.Sprintf("Would backfill session_id for %s", doc.Card.ID))
-				} else {
-					doc.Card.SessionID = stringPtr(statusResult.SessionID)
-					sessionBackfilled = true
-				}
-			}
-
-			action, err := reconcileDispatchedTicket(file, doc, statusResult, dryRun)
-			if err != nil {
-				return 0, err
-			}
-			if action != "" {
-				actions = append(actions, action)
-			}
-
-			// If we backfilled session_id but the ticket is still running
-			// (no state transition wrote the file), persist the update now.
-			if sessionBackfilled && action == "" {
-				if err := doc.WriteFile(file); err != nil {
-					return 0, err
-				}
-				actions = append(actions, fmt.Sprintf("%s: backfilled session_id", doc.Card.ID))
-			}
-		case frontmatter.StatusDone, frontmatter.StatusFailed:
-			if doc.Card.DispatchID == nil {
-				// Legacy card completed before dispatch tracking existed; skip silently.
-				continue
-			}
-
-			needsTokens := doc.Card.Tokens == nil
-			needsSession := doc.Card.SessionID == nil || *doc.Card.SessionID == ""
-			if !needsTokens && !needsSession {
-				continue
-			}
-
-			statusResult, err := d.Status(*doc.Card.DispatchID)
-			if err != nil {
-				continue
-			}
-
-			var filled []string
-			if needsTokens && statusResult.Tokens != nil {
-				doc.Card.Tokens = tokenUsage(statusResult.Tokens)
-				filled = append(filled, "tokens")
-			}
-			if needsSession && statusResult.SessionID != "" {
-				doc.Card.SessionID = stringPtr(statusResult.SessionID)
-				filled = append(filled, "session_id")
-			}
-			if len(filled) == 0 {
-				continue
-			}
-
 			if dryRun {
-				actions = append(actions, fmt.Sprintf("Would backfill %s for %s", strings.Join(filled, ", "), doc.Card.ID))
+				actions = append(actions, fmt.Sprintf("Would fail %s: %s", doc.Card.ID, message))
 				continue
 			}
+			appendLog(doc, "warning -- "+message)
+			appendLog(doc, "note -- auto-failed due to status-check infrastructure failure, not confirmed worker failure")
+			action, failErr := failDuringReconcile(file, doc, nil, fmt.Sprintf("agent-mux status query failed repeatedly: %v", err), "failed -- "+message)
+			if failErr != nil {
+				return 0, failErr
+			}
+			actions = append(actions, action)
+			fmt.Fprintf(stdout, "[STALL_WARNING] %s auto-failed due to status-check failure (infrastructure may be degraded)\n", doc.Card.ID)
+			continue
+		}
 
+		// Backfill session_id when the status response provides one
+		// but the card doesn't have it yet (agent-mux --async only
+		// returns dispatch_id; session_id becomes available later).
+		sessionBackfilled := false
+		if statusResult.SessionID != "" && (doc.Card.SessionID == nil || *doc.Card.SessionID == "") {
+			if dryRun {
+				actions = append(actions, fmt.Sprintf("Would backfill session_id for %s", doc.Card.ID))
+			} else {
+				doc.Card.SessionID = stringPtr(statusResult.SessionID)
+				sessionBackfilled = true
+			}
+		}
+
+		action, err := reconcileDispatchedTicket(file, doc, statusResult, dryRun)
+		if err != nil {
+			return 0, err
+		}
+		if action != "" {
+			actions = append(actions, action)
+		}
+
+		// If we backfilled session_id but the ticket is still running
+		// (no state transition wrote the file), persist the update now.
+		if sessionBackfilled && action == "" {
 			if err := doc.WriteFile(file); err != nil {
 				return 0, err
 			}
-			actions = append(actions, fmt.Sprintf("%s: backfilled %s", doc.Card.ID, strings.Join(filled, ", ")))
+			actions = append(actions, fmt.Sprintf("%s: backfilled session_id", doc.Card.ID))
 		}
 	}
 
@@ -219,9 +183,6 @@ func reconcileDispatchedTicket(file string, doc *frontmatter.Document, statusRes
 		}
 		doc.Card.Status = result.To
 		backfillStatusFields(doc, statusResult)
-		if statusResult.Tokens != nil {
-			doc.Card.Tokens = tokenUsage(statusResult.Tokens)
-		}
 		appendLog(doc, "done -- completed via reconcile (agent didn't call tickets complete)")
 		if err := doc.WriteFile(file); err != nil {
 			return "", err
@@ -239,9 +200,6 @@ func reconcileDispatchedTicket(file string, doc *frontmatter.Document, statusRes
 			}
 			doc.Card.Status = result.To
 			backfillStatusFields(doc, statusResult)
-			if statusResult.Tokens != nil {
-				doc.Card.Tokens = tokenUsage(statusResult.Tokens)
-			}
 			appendLog(doc, "done -- agent-mux reports failed but Result section is populated; marking done")
 			if err := doc.WriteFile(file); err != nil {
 				return "", err
@@ -268,9 +226,6 @@ func reconcileDispatchedTicket(file string, doc *frontmatter.Document, statusRes
 			}
 			doc.Card.Status = result.To
 			backfillStatusFields(doc, statusResult)
-			if statusResult.Tokens != nil {
-				doc.Card.Tokens = tokenUsage(statusResult.Tokens)
-			}
 			appendLog(doc, "done -- dispatch timed out but Result section is populated; marking done")
 			if err := doc.WriteFile(file); err != nil {
 				return "", err
@@ -328,9 +283,6 @@ func backfillStatusFields(doc *frontmatter.Document, statusResult *dispatch.Stat
 	if statusResult.SessionID != "" {
 		doc.Card.SessionID = stringPtr(statusResult.SessionID)
 	}
-	if statusResult.Tokens != nil {
-		doc.Card.Tokens = tokenUsage(statusResult.Tokens)
-	}
 }
 
 func consecutiveStatusQueryFailures(doc *frontmatter.Document) int {
@@ -348,14 +300,5 @@ func consecutiveStatusQueryFailures(doc *frontmatter.Document) int {
 		break
 	}
 	return count
-}
-
-func tokenUsage(tokens *dispatch.TokenData) *frontmatter.TokenUsage {
-	return &frontmatter.TokenUsage{
-		In:          tokens.In,
-		Out:         tokens.Out,
-		Cache:       tokens.Cache,
-		PeakContext: tokens.PeakContext,
-	}
 }
 

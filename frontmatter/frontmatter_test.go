@@ -103,14 +103,16 @@ func TestHeaderMutationPreservesUnchangedBytes(t *testing.T) {
 	for _, line := range []string{
 		"id: TEST-010\n",
 		"title: Keep formatting\n",
-		"tokens: null\n",
 	} {
 		if !strings.Contains(text, line) {
 			t.Fatalf("expected unchanged line %q in:\n%s", line, text)
 		}
 	}
-	if strings.Contains(text, "work_dir:") {
-		t.Fatalf("expected deprecated work_dir field omitted after rewrite:\n%s", text)
+	// Deprecated fields (work_dir, tokens) are silently dropped on rewrite.
+	for _, deprecated := range []string{"work_dir:", "tokens:"} {
+		if strings.Contains(text, deprecated) {
+			t.Fatalf("expected deprecated field %q dropped after rewrite:\n%s", deprecated, text)
+		}
 	}
 }
 
@@ -190,31 +192,6 @@ func TestPointerFieldHandling(t *testing.T) {
 		if !strings.Contains(string(serialized), field) {
 			t.Fatalf("expected serialized output to contain %q", field)
 		}
-	}
-}
-
-func TestTokenUsageRoundTrip(t *testing.T) {
-	doneDoc, err := Parse(loadFixture(t, "done.md"))
-	if err != nil {
-		t.Fatalf("parse done fixture: %v", err)
-	}
-
-	if doneDoc.Card.Tokens == nil {
-		t.Fatal("expected tokens to be present")
-	}
-
-	wantTokens := &TokenUsage{In: 12400, Out: 3200, Cache: 8100, PeakContext: 41000}
-	if !reflect.DeepEqual(wantTokens, doneDoc.Card.Tokens) {
-		t.Fatalf("unexpected tokens\nwant: %#v\ngot: %#v", wantTokens, doneDoc.Card.Tokens)
-	}
-
-	openDoc, err := Parse(loadFixture(t, "open.md"))
-	if err != nil {
-		t.Fatalf("parse open fixture: %v", err)
-	}
-
-	if openDoc.Card.Tokens != nil {
-		t.Fatalf("expected nil tokens for open fixture, got %#v", openDoc.Card.Tokens)
 	}
 }
 

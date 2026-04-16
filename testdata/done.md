@@ -17,11 +17,6 @@ effort: high
 attempts: 1
 last_attempt_outcome: null
 block_reason: null
-tokens:
-  in: 12400
-  out: 3200
-  cache: 8100
-  peak_context: 41000
 ---
 
 ## Context
@@ -37,4 +32,4 @@ Output written to `research/papers-survey.md`.
 ## Log
 - 2026-04-06T10:00:00Z open -- created for testing
 - 2026-04-06T10:05:00Z dispatched -- codex/gpt-5.4/high dispatch_id=01JQ5678EFGH
-- 2026-04-06T10:30:00Z done -- completed, tokens: in=12400 out=3200
+- 2026-04-06T10:30:00Z done -- completed

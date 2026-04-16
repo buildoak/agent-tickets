@@ -22,19 +22,23 @@ type StalledTicket struct {
 }
 
 func runStallDetection(baseDir string, cfg config.Config) (int, error) {
-	files, err := allTicketFiles(baseDir)
+	docs, err := loadAllTicketDocs(baseDir)
 	if err != nil {
 		return 0, err
 	}
+	return runStallDetectionFromDocs(docs, cfg)
+}
 
+// runStallDetectionFromDocs runs stall detection against a pre-parsed slice
+// of ticket docs — used by `tick` to avoid a second full walk of the cards
+// directory on each cycle.
+func runStallDetectionFromDocs(docs []TicketDoc, cfg config.Config) (int, error) {
 	now := time.Now()
 	var stalled []StalledTicket
 
-	for _, file := range files {
-		doc, err := frontmatter.ParseFile(file)
-		if err != nil {
-			continue
-		}
+	for _, td := range docs {
+		doc := td.Doc
+		file := td.Path
 		if doc.Card.Status != frontmatter.StatusDispatched {
 			continue
 		}

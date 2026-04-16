@@ -64,7 +64,7 @@ Both fields can coexist on one ticket; both must be satisfied before dispatch. M
 
 **Tick cycle:** `tick` acquires a file lock, then runs: reconcile -> stall-detect -> dispatch-ready. Safe for LaunchAgent scheduling.
 
-**Reconcile:** Scans all `dispatched` cards. For each, queries `agent-mux status <dispatch_id>`. It is result-sensitive: substantial `## Result` content wins over raw agent-mux exit status. `completed` without a substantial Result fails the ticket; `failed` or `timeout` with a substantial Result marks it done. Backfills `session_id` and `tokens` when available. Status query failures are tolerated up to `max_retry` before auto-failing.
+**Reconcile:** Scans all `dispatched` cards. For each, queries `agent-mux status <dispatch_id>`. It is result-sensitive: substantial `## Result` content wins over raw agent-mux exit status. `completed` without a substantial Result fails the ticket; `failed` or `timeout` with a substantial Result marks it done. Backfills `session_id` when available. Terminal cards (done/failed/blocked/closed) are never re-queried. Status query failures are tolerated up to `max_retry` before auto-failing.
 
 ---
 
@@ -267,7 +267,7 @@ Use `--dry-run` before real dispatch when batch size > 3 or when unsure about re
 
 Runs automatically inside `tick`. Manual run: `tickets reconcile`.
 
-What it does: polls `agent-mux status` for each dispatched ticket, then decides based on both backend status and `## Result` content. A substantial Result can cause reconcile to mark a ticket `done` even when agent-mux reports `failed` or `timeout`; a missing/placeholder Result can cause a `completed` run to be marked `failed`. It also backfills `session_id` and `tokens` on done/failed cards that are missing them.
+What it does: polls `agent-mux status` for each dispatched ticket, then decides based on both backend status and `## Result` content. A substantial Result can cause reconcile to mark a ticket `done` even when agent-mux reports `failed` or `timeout`; a missing/placeholder Result can cause a `completed` run to be marked `failed`. It also backfills `session_id` during the running-card pass. Terminal cards (done/failed/blocked/closed) are not re-queried.
 
 Run manually when: you suspect a worker finished but the card was not updated (worker crashed after writing Result but before calling `tickets complete`).
 

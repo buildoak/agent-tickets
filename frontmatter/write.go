@@ -67,7 +67,6 @@ var cardFieldOrder = []string{
 	"block_reason",
 	"default_profile",
 	"default_skills",
-	"tokens",
 }
 
 func (d *Document) serializeHeader(card Card) ([]byte, error) {
@@ -184,8 +183,6 @@ func marshalCardField(key string, card Card) ([]byte, error) {
 		value = card.DefaultProfile
 	case "default_skills":
 		value = card.DefaultSkills
-	case "tokens":
-		value = card.Tokens
 	default:
 		return nil, fmt.Errorf("unknown frontmatter field: %s", key)
 	}
@@ -265,8 +262,6 @@ func cardFieldEqual(key string, a, b Card) bool {
 		return reflect.DeepEqual(a.DefaultProfile, b.DefaultProfile)
 	case "default_skills":
 		return reflect.DeepEqual(a.DefaultSkills, b.DefaultSkills)
-	case "tokens":
-		return reflect.DeepEqual(a.Tokens, b.Tokens)
 	default:
 		return false
 	}

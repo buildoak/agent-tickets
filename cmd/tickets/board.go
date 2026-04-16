@@ -150,7 +150,7 @@ func boardAnnotation(card frontmatter.Card, statusByID map[string]frontmatter.St
 		}
 		return "running", detail
 	case frontmatter.StatusDone:
-		return "done", formatTokens(card.Tokens)
+		return "done", ""
 	case frontmatter.StatusFailed:
 		detail := fmt.Sprintf("attempt %d", card.Attempts)
 		if card.Attempts != 1 {
@@ -203,13 +203,3 @@ func stallAnnotation(doc *frontmatter.Document, cfg config.Config, now time.Time
 	return fmt.Sprintf("STALLED %.0fm (timeout %dm)", elapsed.Minutes(), cfg.StallTimeout(string(doc.Card.Tier)))
 }
 
-func formatTokens(tokens *frontmatter.TokenUsage) string {
-	if tokens == nil {
-		return ""
-	}
-	total := tokens.In + tokens.Out
-	if total >= 1000 {
-		return fmt.Sprintf("%.1fk tok", float64(total)/1000.0)
-	}
-	return fmt.Sprintf("%d tok", total)
-}

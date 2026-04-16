@@ -143,6 +143,32 @@ func parseTicketID(id string) (initiative string, seq int, err error) {
 	return matches[1], seq, nil
 }
 
+// TicketDoc bundles a ticket file path with its parsed document so tick
+// phases can share a single parse pass instead of re-reading every card.
+type TicketDoc struct {
+	Path string
+	Doc  *frontmatter.Document
+}
+
+// loadAllTicketDocs walks the tickets tree once, returning parsed documents.
+// Cards that fail to parse are silently skipped (matching legacy behavior
+// where ParseFile errors were swallowed inside each phase).
+func loadAllTicketDocs(baseDir string) ([]TicketDoc, error) {
+	files, err := allTicketFiles(baseDir)
+	if err != nil {
+		return nil, err
+	}
+	docs := make([]TicketDoc, 0, len(files))
+	for _, file := range files {
+		doc, err := frontmatter.ParseFile(file)
+		if err != nil {
+			continue
+		}
+		docs = append(docs, TicketDoc{Path: file, Doc: doc})
+	}
+	return docs, nil
+}
+
 func allTicketFiles(baseDir string) ([]string, error) {
 	root := filepath.Join(baseDir, "cards")
 	if filepath.Base(baseDir) == "cards" || filepath.Base(filepath.Dir(baseDir)) == "cards" {

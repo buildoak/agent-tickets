@@ -91,13 +91,10 @@ type Card struct {
     BlockReason            *string
     DefaultProfile         *string
     DefaultSkills          []string
-
-    // Telemetry
-    Tokens                 *TokenUsage  // in, out, cache, peak_context
 }
 ```
 
-`reopen` clears runtime dispatch fields `dispatch_id`, `session_id`, and `dispatched_at`, then clears card-level `engine`, `model`, `effort`, and `tokens` for a fresh retry. It preserves `profile` and `last_attempt_outcome`.
+`reopen` clears runtime dispatch fields `dispatch_id`, `session_id`, and `dispatched_at`, then clears card-level `engine`, `model`, and `effort` for a fresh retry. It preserves `profile` and `last_attempt_outcome`.
 
 ## FSM States and Transitions
 
@@ -115,6 +112,9 @@ type Card struct {
 ## Automation Notes
 
 - `tick` runs `reconcile -> stall-detect -> dispatch-ready` under a file lock.
+- Fast-path: on wake, `tick` stats the `cards/` tree mtime. If unchanged since the persisted `.tick-state` cursor AND the 9-minute stall-check window has not elapsed, it exits with `tick: no-change skip`. The stall-check cursor is independent so slow dispatches still get audited on a bounded cadence even when the filesystem is idle.
+- Single parse pass: when phases run, `loadAllTicketDocs` parses cards once and passes the slice to `reconcileTicketsFromDocs` / `runStallDetectionFromDocs` / `dispatchReadyTicketsFromDocs`. Early-exit guards skip phases with nothing to do (no dispatched cards → skip reconcile; no open-ready cards → skip dispatch-ready).
+- Reconcile only queries `agent-mux status` for cards in the `dispatched` state. Terminal cards (done/failed/blocked/closed) are never re-queried.
 - Stall detection auto-fails `dispatched` tickets that exceed their timeout, prints `[STALL_WARNING]`, uses `initiatives.<NAME>.stall_timeout_minutes` when set, and falls back to the last `dispatched --` log timestamp if `dispatched_at` is missing.
 
 ## Config Notes

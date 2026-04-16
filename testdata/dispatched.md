@@ -17,7 +17,6 @@ effort: xhigh
 attempts: 1
 last_attempt_outcome: null
 block_reason: null
-tokens: null
 ---
 
 ## Context

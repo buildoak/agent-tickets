@@ -36,6 +36,17 @@ func runDispatchReady(baseDir string, maxDispatch int) (int, error) {
 }
 
 func dispatchReadyTickets(baseDir string, maxDispatch int, dryRun bool) (int, error) {
+	docs, err := loadAllTicketDocs(baseDir)
+	if err != nil {
+		return 0, err
+	}
+	return dispatchReadyTicketsFromDocs(baseDir, docs, maxDispatch, dryRun)
+}
+
+// dispatchReadyTicketsFromDocs dispatches eligible open tickets using a
+// pre-parsed slice of ticket docs. Dependency and awaits lookups use the
+// slice as an in-memory index instead of re-reading each card's file.
+func dispatchReadyTicketsFromDocs(baseDir string, docs []TicketDoc, maxDispatch int, dryRun bool) (int, error) {
 	if maxDispatch <= 0 {
 		fmt.Fprintln(stdout, "nothing to dispatch")
 		return 0, nil
@@ -46,19 +57,16 @@ func dispatchReadyTickets(baseDir string, maxDispatch int, dryRun bool) (int, er
 		return 0, err
 	}
 
-	files, err := allTicketFiles(baseDir)
-	if err != nil {
-		return 0, err
+	engineWeight := buildEngineWeightMapFromDocs(docs, cfg)
+
+	byID := make(map[string]*frontmatter.Document, len(docs))
+	for _, td := range docs {
+		byID[td.Doc.Card.ID] = td.Doc
 	}
 
-	engineWeight := buildEngineWeightMap(files, cfg)
-
 	eligible := make([]*frontmatter.Document, 0)
-	for _, file := range files {
-		doc, err := frontmatter.ParseFile(file)
-		if err != nil {
-			continue
-		}
+	for _, td := range docs {
+		doc := td.Doc
 		if doc.Card.Status != frontmatter.StatusOpen || doc.Card.Manual {
 			continue
 		}
@@ -68,16 +76,16 @@ func dispatchReadyTickets(baseDir string, maxDispatch int, dryRun bool) (int, er
 
 		ready := true
 		for _, dep := range doc.Card.DependsOn {
-			_, depDoc, err := loadTicket(baseDir, dep)
-			if err != nil || depDoc.Card.Status != frontmatter.StatusDone {
+			depDoc, ok := byID[dep]
+			if !ok || depDoc.Card.Status != frontmatter.StatusDone {
 				ready = false
 				break
 			}
 		}
 		if ready {
 			for _, aw := range doc.Card.Awaits {
-				_, awDoc, err := loadTicket(baseDir, aw)
-				if err != nil || !awDoc.Card.Status.IsTerminal() {
+				awDoc, ok := byID[aw]
+				if !ok || !awDoc.Card.Status.IsTerminal() {
 					ready = false
 					break
 				}
@@ -195,34 +203,49 @@ func buildEngineWeightMap(files []string, cfg config.Config) map[string]int {
 		if err != nil {
 			continue
 		}
-		if doc.Card.Status != frontmatter.StatusDispatched {
-			continue
-		}
-		engine := valueOrBlank(doc.Card.Engine)
-		model := valueOrBlank(doc.Card.Model)
-		if engine == "" {
-			continue
-		}
-		// When a ticket was dispatched via a profile that handles engine
-		// selection, the card stores "profile-defined" instead of the real
-		// engine/model. Resolve through the profile_engine/profile_model
-		// config maps so the weight lands on the correct engine bucket.
-		if engine == profileDefinedSentinel {
-			profile := valueOrBlank(doc.Card.Profile)
-			if profile != "" {
-				engine = cfg.ResolveProfileEngine(profile)
-			}
-		}
-		if model == profileDefinedSentinel {
-			profile := valueOrBlank(doc.Card.Profile)
-			if profile != "" {
-				model = cfg.ResolveProfileModel(profile)
-			}
-		}
-		if engine == "" {
-			continue
-		}
-		weights[engine] += cfg.ModelWeightFor(model)
+		weights = addCardToEngineWeight(weights, &doc.Card, cfg)
 	}
+	return weights
+}
+
+// buildEngineWeightMapFromDocs is the single-pass variant used by tick
+// phases that already have parsed docs in memory.
+func buildEngineWeightMapFromDocs(docs []TicketDoc, cfg config.Config) map[string]int {
+	weights := make(map[string]int)
+	for _, td := range docs {
+		weights = addCardToEngineWeight(weights, &td.Doc.Card, cfg)
+	}
+	return weights
+}
+
+func addCardToEngineWeight(weights map[string]int, card *frontmatter.Card, cfg config.Config) map[string]int {
+	if card.Status != frontmatter.StatusDispatched {
+		return weights
+	}
+	engine := valueOrBlank(card.Engine)
+	model := valueOrBlank(card.Model)
+	if engine == "" {
+		return weights
+	}
+	// When a ticket was dispatched via a profile that handles engine
+	// selection, the card stores "profile-defined" instead of the real
+	// engine/model. Resolve through the profile_engine/profile_model
+	// config maps so the weight lands on the correct engine bucket.
+	if engine == profileDefinedSentinel {
+		profile := valueOrBlank(card.Profile)
+		if profile != "" {
+			engine = cfg.ResolveProfileEngine(profile)
+		}
+	}
+	if model == profileDefinedSentinel {
+		profile := valueOrBlank(card.Profile)
+		if profile != "" {
+			model = cfg.ResolveProfileModel(profile)
+		}
+	}
+	if engine == "" {
+		return weights
+	}
+	weights[engine] += cfg.ModelWeightFor(model)
 	return weights
 }

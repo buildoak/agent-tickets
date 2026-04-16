@@ -227,9 +227,6 @@ func TestFailAndReopen(t *testing.T) {
 	if doc.Card.Model != nil {
 		t.Fatalf("expected model cleared, got %#v", doc.Card.Model)
 	}
-	if doc.Card.Tokens != nil {
-		t.Fatalf("expected tokens cleared, got %#v", doc.Card.Tokens)
-	}
 }
 
 func TestBlockAndReopen(t *testing.T) {
@@ -338,7 +335,7 @@ func TestReconcileIgnoresPlaceholderResult(t *testing.T) {
 	t.Setenv("TICKETS_BASE_DIR", baseDir)
 	withMockDispatcher(t, &dispatch.MockDispatcher{
 		StatusFunc: func(id string) (*dispatch.StatusResult, error) {
-			return &dispatch.StatusResult{Status: "completed", Tokens: &dispatch.TokenData{In: 7}}, nil
+			return &dispatch.StatusResult{Status: "completed"}, nil
 		},
 	})
 
@@ -887,36 +884,6 @@ func TestDispatchRetryPreamble(t *testing.T) {
 	}
 }
 
-func TestCompletePopulatesTokens(t *testing.T) {
-	baseDir := t.TempDir()
-	t.Setenv("TICKETS_BASE_DIR", baseDir)
-	withMockDispatcher(t, &dispatch.MockDispatcher{
-		StatusFunc: func(dispatchID string) (*dispatch.StatusResult, error) {
-			return &dispatch.StatusResult{
-				Status: "completed",
-				Tokens: &dispatch.TokenData{In: 11, Out: 7, Cache: 3, PeakContext: 101},
-			}, nil
-		},
-	})
-
-	mustRun(t, "init", "ALPHA", "--title", "Alpha")
-	id := strings.TrimSpace(mustRunStdout(t, "create", "--initiative", "ALPHA", "--title", "Token test", "--tier", "worker"))
-
-	mustRun(t, "dispatch", id, "--engine", "codex", "--model", "gpt-5.4")
-	doc := mustParseTicket(t, baseDir, id)
-	doc.SetSection("Result", "Completed work.\n")
-	writeTicket(t, baseDir, id, doc)
-
-	mustRun(t, "complete", id)
-	doc = mustParseTicket(t, baseDir, id)
-	if doc.Card.Tokens == nil {
-		t.Fatal("expected tokens to be populated")
-	}
-	if doc.Card.Tokens.In != 11 || doc.Card.Tokens.Out != 7 || doc.Card.Tokens.Cache != 3 || doc.Card.Tokens.PeakContext != 101 {
-		t.Fatalf("unexpected tokens: %#v", doc.Card.Tokens)
-	}
-}
-
 func TestCompleteNilDispatchID(t *testing.T) {
 	baseDir := t.TempDir()
 	t.Setenv("TICKETS_BASE_DIR", baseDir)
@@ -933,24 +900,11 @@ func TestCompleteNilDispatchID(t *testing.T) {
 	doc.SetSection("Result", "Completed work.\n")
 	writeTicket(t, baseDir, id, doc)
 
-	// Capture stderr
-	var buf bytes.Buffer
-	prevStderr := stderr
-	stderr = &buf
-	defer func() { stderr = prevStderr }()
-
 	mustRun(t, "complete", id)
 
 	doc = mustParseTicket(t, baseDir, id)
 	if doc.Card.Status != frontmatter.StatusDone {
 		t.Fatalf("expected done, got %s", doc.Card.Status)
-	}
-	if doc.Card.Tokens != nil {
-		t.Fatalf("expected tokens to remain nil, got %#v", doc.Card.Tokens)
-	}
-	warning := buf.String()
-	if !strings.Contains(warning, "dispatch_id missing") {
-		t.Fatalf("expected dispatch_id warning on stderr, got %q", warning)
 	}
 }
 
@@ -959,10 +913,7 @@ func TestReconcileCompletedWithResult(t *testing.T) {
 	t.Setenv("TICKETS_BASE_DIR", baseDir)
 	withMockDispatcher(t, &dispatch.MockDispatcher{
 		StatusFunc: func(id string) (*dispatch.StatusResult, error) {
-			return &dispatch.StatusResult{
-				Status: "completed",
-				Tokens: &dispatch.TokenData{In: 100, Out: 50, Cache: 30, PeakContext: 200},
-			}, nil
+			return &dispatch.StatusResult{Status: "completed"}, nil
 		},
 	})
 
@@ -979,9 +930,6 @@ func TestReconcileCompletedWithResult(t *testing.T) {
 	doc = mustParseTicket(t, baseDir, id)
 	if doc.Card.Status != frontmatter.StatusDone {
 		t.Fatalf("expected done, got %s", doc.Card.Status)
-	}
-	if doc.Card.Tokens == nil || doc.Card.Tokens.In != 100 {
-		t.Fatalf("expected tokens backfilled, got %#v", doc.Card.Tokens)
 	}
 }
 
@@ -1135,38 +1083,6 @@ func TestReconcileDryRun(t *testing.T) {
 	doc := mustParseTicket(t, baseDir, id)
 	if doc.Card.Status != frontmatter.StatusDispatched {
 		t.Fatalf("dry-run should not mutate status, got %s", doc.Card.Status)
-	}
-}
-
-func TestReconcileBackfillsDoneTokens(t *testing.T) {
-	baseDir := t.TempDir()
-	t.Setenv("TICKETS_BASE_DIR", baseDir)
-	withMockDispatcher(t, &dispatch.MockDispatcher{
-		StatusFunc: func(id string) (*dispatch.StatusResult, error) {
-			return &dispatch.StatusResult{
-				Status: "completed",
-				Tokens: &dispatch.TokenData{In: 9, Out: 4, Cache: 1, PeakContext: 77},
-			}, nil
-		},
-	})
-
-	mustRun(t, "init", "ALPHA", "--title", "Alpha")
-	id := strings.TrimSpace(mustRunStdout(t, "create", "--initiative", "ALPHA", "--title", "Done token fill", "--tier", "worker"))
-	mustRun(t, "dispatch", id, "--engine", "codex", "--model", "gpt-5.4")
-	doc := mustParseTicket(t, baseDir, id)
-	doc.SetSection("Result", "Completed work.\n")
-	writeTicket(t, baseDir, id, doc)
-	mustRun(t, "complete", id)
-
-	doc = mustParseTicket(t, baseDir, id)
-	doc.Card.Tokens = nil
-	writeTicket(t, baseDir, id, doc)
-
-	mustRun(t, "reconcile")
-
-	doc = mustParseTicket(t, baseDir, id)
-	if doc.Card.Tokens == nil || doc.Card.Tokens.In != 9 {
-		t.Fatalf("expected done tokens backfilled, got %#v", doc.Card.Tokens)
 	}
 }
 
@@ -1555,10 +1471,7 @@ func TestTick(t *testing.T) {
 			return &dispatch.DispatchResult{DispatchID: "tick-dispatch"}, nil
 		},
 		StatusFunc: func(id string) (*dispatch.StatusResult, error) {
-			return &dispatch.StatusResult{
-				Status: "completed",
-				Tokens: &dispatch.TokenData{In: 5, Out: 2, Cache: 1, PeakContext: 42},
-			}, nil
+			return &dispatch.StatusResult{Status: "completed"}, nil
 		},
 	})
 
@@ -2426,7 +2339,6 @@ func TestReconcileBackfillsSessionIDOnComplete(t *testing.T) {
 			return &dispatch.StatusResult{
 				Status:    "completed",
 				SessionID: "ses-xyz789",
-				Tokens:    &dispatch.TokenData{In: 50, Out: 25},
 			}, nil
 		},
 	})
@@ -2453,82 +2365,11 @@ func TestReconcileBackfillsSessionIDOnComplete(t *testing.T) {
 	}
 }
 
-func TestReconcileBackfillsSessionIDForDoneTicket(t *testing.T) {
-	baseDir := t.TempDir()
-	t.Setenv("TICKETS_BASE_DIR", baseDir)
-	withMockDispatcher(t, &dispatch.MockDispatcher{
-		StatusFunc: func(id string) (*dispatch.StatusResult, error) {
-			return &dispatch.StatusResult{
-				Status:    "completed",
-				SessionID: "ses-done456",
-				Tokens:    &dispatch.TokenData{In: 9, Out: 4, Cache: 1, PeakContext: 77},
-			}, nil
-		},
-	})
-
-	mustRun(t, "init", "ALPHA", "--title", "Alpha")
-	id := strings.TrimSpace(mustRunStdout(t, "create", "--initiative", "ALPHA", "--title", "Done session fill", "--tier", "worker"))
-	mustRun(t, "dispatch", id, "--engine", "codex", "--model", "gpt-5.4")
-	doc := mustParseTicket(t, baseDir, id)
-	doc.SetSection("Result", "Completed work.\n")
-	writeTicket(t, baseDir, id, doc)
-	mustRun(t, "complete", id)
-
-	// Clear session_id and tokens to simulate the backfill scenario
-	doc = mustParseTicket(t, baseDir, id)
-	empty := ""
-	doc.Card.SessionID = &empty
-	doc.Card.Tokens = nil
-	writeTicket(t, baseDir, id, doc)
-
-	mustRun(t, "reconcile")
-
-	doc = mustParseTicket(t, baseDir, id)
-	if doc.Card.SessionID == nil || *doc.Card.SessionID != "ses-done456" {
-		t.Fatalf("expected session_id ses-done456, got %v", doc.Card.SessionID)
-	}
-	if doc.Card.Tokens == nil || doc.Card.Tokens.In != 9 {
-		t.Fatalf("expected tokens backfilled, got %#v", doc.Card.Tokens)
-	}
-}
-
-func TestReconcileBackfillsFailureMetadata(t *testing.T) {
-	baseDir := t.TempDir()
-	t.Setenv("TICKETS_BASE_DIR", baseDir)
-	withMockDispatcher(t, &dispatch.MockDispatcher{
-		StatusFunc: func(id string) (*dispatch.StatusResult, error) {
-			return &dispatch.StatusResult{
-				Status:    "failed",
-				SessionID: "ses-failed123",
-				Error:     "backend exploded",
-				Tokens:    &dispatch.TokenData{In: 17, Out: 6, Cache: 2, PeakContext: 90},
-			}, nil
-		},
-	})
-
-	mustRun(t, "init", "ALPHA", "--title", "Alpha")
-	id := strings.TrimSpace(mustRunStdout(t, "create", "--initiative", "ALPHA", "--title", "Failure metadata", "--tier", "worker"))
-	mustRun(t, "dispatch", id, "--engine", "codex", "--model", "gpt-5.4")
-
-	doc := mustParseTicket(t, baseDir, id)
-	empty := ""
-	doc.Card.SessionID = &empty
-	doc.Card.Tokens = nil
-	writeTicket(t, baseDir, id, doc)
-
-	mustRun(t, "reconcile")
-
-	doc = mustParseTicket(t, baseDir, id)
-	if doc.Card.Status != frontmatter.StatusFailed {
-		t.Fatalf("expected failed, got %s", doc.Card.Status)
-	}
-	if doc.Card.SessionID == nil || *doc.Card.SessionID != "ses-failed123" {
-		t.Fatalf("expected failed session_id backfill, got %#v", doc.Card.SessionID)
-	}
-	if doc.Card.Tokens == nil || doc.Card.Tokens.In != 17 {
-		t.Fatalf("expected failed tokens backfill, got %#v", doc.Card.Tokens)
-	}
-}
+// Note: terminal-state cards (done/failed/blocked/closed) are NOT queried
+// by reconcile anymore — the tokens-on-card feature was carved out along
+// with the backfill loop that would have filled session_id on already-
+// terminal cards. Session backfill is still exercised for running
+// (dispatched) and just-transitioning cards via the other reconcile tests.
 
 func TestReconcileAutoBlocksWhenRetryBudgetExhausted(t *testing.T) {
 	baseDir := t.TempDir()

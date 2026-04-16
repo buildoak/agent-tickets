@@ -53,7 +53,6 @@ func cmdReopen(args []string) error {
 		doc.Card.Engine = nil
 		doc.Card.Model = nil
 		doc.Card.Effort = nil
-		doc.Card.Tokens = nil
 	}
 	if result.ClearBlockReason {
 		doc.Card.BlockReason = nil

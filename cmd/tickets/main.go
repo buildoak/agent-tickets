@@ -333,7 +333,7 @@ Flags:
 Output:
   Default: table showing ID, TITLE, TIER, and status annotation.
   Annotations include: queued, waiting (with blockers and awaits), running (with engine/model),
-  done (with token usage), failed (with attempt count and reason), blocked, manual,
+  done, failed (with attempt count and reason), blocked, manual,
   CLOSED (with closure reason). Unresolved soft deps show an "(awaits)" suffix.
   With --json: full card objects with annotation and detail fields.
 
@@ -439,9 +439,17 @@ Flags:
   --max-dispatch INT   Maximum tickets to dispatch (default: from .tickets.toml max_dispatch_per_tick)
   --base DIR           Override tickets base directory
 
-Runs three phases in sequence:
+Fast-path: on wake, tick stats the cards/ tree mtime and compares to the
+persisted cursor in .tick-state. If nothing has changed since last run AND
+the stall-check window (9 min) hasn't elapsed, tick emits "no-change skip"
+and exits in a handful of milliseconds. When phases do run, cards are
+parsed once and the slice is shared across reconcile/stall/dispatch-ready.
+Phases also early-exit when their precondition isn't met (no dispatched
+cards → skip reconcile; no open-ready cards → skip dispatch-ready).
+
+Runs three phases in sequence (when work is detected):
   1. Reconcile: sync dispatched ticket states with agent-mux status
-  2. Stall detection: find tickets exceeding their tier's timeout, create GUARDIAN audit tickets
+  2. Stall detection: find tickets exceeding their tier's timeout, auto-fail
   3. Dispatch-ready: auto-dispatch eligible open tickets up to --max-dispatch
 
 Uses a file lock (.tick.lock) to prevent concurrent tick runs.
@@ -449,6 +457,7 @@ Designed to be called periodically by a LaunchAgent or cron job.
 
 Output:
   "tick: reconciled N, stalled N, dispatched N"
+  "tick: no-change skip"   (fast path)
 
 Example:
   tickets tick
@@ -466,11 +475,11 @@ Flags:
 
 For each dispatched ticket, queries agent-mux status and:
   - Running: no change (backfills session_id if missing)
-  - Completed: transitions to done, backfills tokens
+  - Completed: transitions to done
   - Failed: transitions to failed, records reason, auto-blocks after max_retry attempts
   - Timeout: transitions to failed with timeout reason
 
-Also backfills token usage and session_id on recently-completed/failed tickets.
+Terminal cards (done/failed/blocked/closed) are not re-queried.
 
 Example:
   tickets reconcile
@@ -495,7 +504,6 @@ Requirements:
 
 Effects:
   - Transitions status: dispatched -> done
-  - Backfills token usage from agent-mux if dispatch_id is present
   - Appends completion event to ## Log
 
 Example:

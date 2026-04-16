@@ -31,13 +31,6 @@ const (
 	TierHeavy  Tier = "heavy"
 )
 
-type TokenUsage struct {
-	In          int `yaml:"in"`
-	Out         int `yaml:"out"`
-	Cache       int `yaml:"cache"`
-	PeakContext int `yaml:"peak_context"`
-}
-
 type Card struct {
 	ID         string   `yaml:"id"`
 	Initiative string   `yaml:"initiative"`
@@ -69,6 +62,4 @@ type Card struct {
 
 	DefaultProfile *string  `yaml:"default_profile"`
 	DefaultSkills  []string `yaml:"default_skills"`
-
-	Tokens *TokenUsage `yaml:"tokens"`
 }
