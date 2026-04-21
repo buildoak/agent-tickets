@@ -374,17 +374,26 @@ Arguments:
                   and all awaits resolved (terminal: done/failed/blocked/closed).
 
 Flags:
-  --profile STRING   Worker profile override (default: card -> initiative default_profile -> .tickets.toml)
-  --engine STRING    Engine override: codex, claude, gemini (default: card -> .tickets.toml)
-  --model STRING     Model override (default: card -> .tickets.toml)
-  --effort STRING    Effort level override (default: card -> .tickets.toml)
-  --base DIR         Override tickets base directory
+  --profile STRING         Worker profile override (default: card -> initiative default_profile -> .tickets.toml)
+  --engine STRING          Engine override: codex, claude, gemini (default: card -> .tickets.toml)
+  --model STRING           Model override (default: card -> .tickets.toml)
+  --effort STRING          Effort level override (default: card -> .tickets.toml)
+  --stagger-seconds INT    Inter-dispatch delay when N>1 IDs are given (default: max(.tickets.toml stagger_seconds, 15); 0 disables; explicit >0 has no floor)
+  --base DIR               Override tickets base directory
 
 Resolution cascade for profile/engine/model/effort:
   1. --flag (explicit CLI override)
   2. Card frontmatter (profile, engine, model, effort fields)
   3. Initiative default_profile (from INITIATIVES/<name>.md frontmatter)
   4. .tickets.toml [defaults] section
+
+Multi-ID stagger:
+  When more than one ticket ID is passed, dispatches are serialized with a
+  sleep between them. This is required because agent-mux --async does NOT
+  daemonize — the child stays attached to the tickets process and is killed
+  if the parent exits before codex finishes reading its prompt. The default
+  floor is 15s (matching stagger behavior used by dispatch-ready). Solo
+  dispatch is unaffected (no sleep, same as before).
 
 Effects:
   - Calls agent-mux --async to start a background worker
@@ -396,6 +405,8 @@ Example:
   tickets dispatch PAPER-OPS-003
   tickets dispatch RECON-001,RECON-002 --engine claude --model opus-4
   tickets dispatch PAPER-OPS-005 --profile ticket-worker-heavy
+  tickets dispatch A-001,B-002,C-003 --stagger-seconds 30   # explicit override
+  tickets dispatch A-001,B-002 --stagger-seconds 0          # disable stagger (advanced)
 `,
 
 	"dispatch-ready": `tickets dispatch-ready — auto-dispatch eligible tickets

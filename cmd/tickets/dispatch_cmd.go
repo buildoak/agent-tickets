@@ -5,12 +5,22 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/buildoak/agent-tickets/config"
 	"github.com/buildoak/agent-tickets/dispatch"
 	"github.com/buildoak/agent-tickets/frontmatter"
 	"github.com/buildoak/agent-tickets/fsm"
 )
+
+// multiIDStaggerFloor is the minimum inter-dispatch delay (seconds) applied
+// when >1 ticket is dispatched in a single invocation and the user did not
+// explicitly override --stagger-seconds. Exists because agent-mux --async
+// does not daemonize: the child stays attached to the tickets process and
+// is SIGKILL'd on parent exit via kqueue EVFILT_PROC|NOTE_EXIT. Without a
+// delay, firing N dispatches back-to-back then exiting tickets kills N-1
+// codex workers mid-startup.
+const multiIDStaggerFloor = 15
 
 var dispatcher dispatch.Dispatcher
 
@@ -44,16 +54,18 @@ func cmdDispatch(args []string) error {
 	engine := fs.String("engine", "", "engine")
 	model := fs.String("model", "", "model")
 	effort := fs.String("effort", "", "effort")
+	// -1 sentinel means "not set on CLI"; 0 means "explicitly disable stagger".
+	staggerFlag := fs.Int("stagger-seconds", -1, "seconds to sleep between dispatches when multiple IDs are given (0 disables; unset applies a 15s floor over config)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if id == "" {
 		if fs.NArg() != 1 {
-			return fmt.Errorf("usage: tickets dispatch TICKET-ID[,TICKET-ID...] [--profile P --engine X --model Y --effort Z]")
+			return fmt.Errorf("usage: tickets dispatch TICKET-ID[,TICKET-ID...] [--profile P --engine X --model Y --effort Z] [--stagger-seconds N]")
 		}
 		id = fs.Arg(0)
 	} else if fs.NArg() != 0 {
-		return fmt.Errorf("usage: tickets dispatch TICKET-ID[,TICKET-ID...] [--profile P --engine X --model Y --effort Z]")
+		return fmt.Errorf("usage: tickets dispatch TICKET-ID[,TICKET-ID...] [--profile P --engine X --model Y --effort Z] [--stagger-seconds N]")
 	}
 
 	cfg, err := config.Load()
@@ -68,11 +80,16 @@ func cmdDispatch(args []string) error {
 
 	ids := splitCSV(id)
 	if len(ids) == 0 {
-		return fmt.Errorf("usage: tickets dispatch TICKET-ID[,TICKET-ID...] [--profile P --engine X --model Y --effort Z]")
+		return fmt.Errorf("usage: tickets dispatch TICKET-ID[,TICKET-ID...] [--profile P --engine X --model Y --effort Z] [--stagger-seconds N]")
+	}
+
+	stagger, staggerSource := resolveDispatchStagger(len(ids), cfg.StaggerSeconds, *staggerFlag)
+	if len(ids) > 1 && stagger > 0 {
+		_, _ = fmt.Fprintf(stdout, "multi-ID dispatch: applying %ds stagger (%s)\n", stagger, staggerSource)
 	}
 
 	var failures []string
-	for _, ticketID := range ids {
+	for i, ticketID := range ids {
 		result, err := dispatchTicket(baseDir, ticketID, d, cfg, dispatch.DispatchOptions{
 			Profile: *profile,
 			Engine:  *engine,
@@ -82,10 +99,13 @@ func cmdDispatch(args []string) error {
 		if err != nil {
 			_, _ = fmt.Fprintf(stdout, "%s: error: %v\n", ticketID, err)
 			failures = append(failures, fmt.Sprintf("%s: %v", ticketID, err))
-			continue
+		} else {
+			_, _ = fmt.Fprintf(stdout, "%s: dispatched dispatch_id=%s\n", ticketID, result.DispatchID)
 		}
 
-		_, _ = fmt.Fprintf(stdout, "%s: dispatched dispatch_id=%s\n", ticketID, result.DispatchID)
+		if stagger > 0 && i < len(ids)-1 {
+			time.Sleep(time.Duration(stagger) * time.Second)
+		}
 	}
 
 	if len(failures) > 0 {
@@ -93,6 +113,32 @@ func cmdDispatch(args []string) error {
 	}
 
 	return nil
+}
+
+// resolveDispatchStagger picks the inter-dispatch sleep for manual multi-ID
+// dispatch. Rules:
+//   - idsCount <= 1  → no stagger, never
+//   - flagVal == 0   → caller explicitly disabled (no floor applied)
+//   - flagVal > 0    → caller-provided value wins verbatim (no floor)
+//   - flagVal < 0    → unset on CLI; use cfg.StaggerSeconds with a 15s floor
+//
+// Returns the stagger seconds plus a human-readable source string used in
+// the stdout announcement.
+func resolveDispatchStagger(idsCount, cfgStagger, flagVal int) (int, string) {
+	if idsCount <= 1 {
+		return 0, ""
+	}
+	if flagVal == 0 {
+		return 0, "disabled via --stagger-seconds=0"
+	}
+	if flagVal > 0 {
+		return flagVal, "via --stagger-seconds"
+	}
+	// Unset: config default with multi-ID floor.
+	if cfgStagger < multiIDStaggerFloor {
+		return multiIDStaggerFloor, fmt.Sprintf("floor; override with --stagger-seconds or TICKETS_STAGGER_SECONDS>=%d", multiIDStaggerFloor)
+	}
+	return cfgStagger, "from .tickets.toml stagger_seconds"
 }
 
 func dispatchTicket(baseDir, id string, d dispatch.Dispatcher, cfg config.Config, opts dispatch.DispatchOptions) (*dispatch.DispatchResult, error) {
