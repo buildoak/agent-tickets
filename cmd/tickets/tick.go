@@ -24,9 +24,18 @@ const stallCheckInterval = 9 * time.Minute
 
 // tickState is the persisted cursor that lets `tick` skip full phase
 // execution when nothing has changed since the previous run.
+//
+// LastCardsMtime + LastStallCheckAt form the "nothing external happened"
+// signal. LastOpenReady + LastEngineWeights form the "work is actionable"
+// signal. Fast-path must require BOTH to skip — otherwise the tick that
+// just dispatched its own work (bumping cards dir mtime) would see the
+// fresh mtime equal its own cursor on the next run and skip while the
+// queue still has openReady tickets and engines have capacity.
 type tickState struct {
-	LastCardsMtime    time.Time `json:"last_cards_mtime"`
-	LastStallCheckAt  time.Time `json:"last_stall_check_at"`
+	LastCardsMtime    time.Time      `json:"last_cards_mtime"`
+	LastStallCheckAt  time.Time      `json:"last_stall_check_at"`
+	LastOpenReady     int            `json:"last_open_ready,omitempty"`
+	LastEngineWeights map[string]int `json:"last_engine_weights,omitempty"`
 }
 
 func cmdTick(args []string) error {
@@ -63,6 +72,14 @@ func cmdTick(args []string) error {
 	// the stall-check interval hasn't elapsed, skip all phases. Stall
 	// detection has its own cadence so slow workers don't hide behind
 	// an idle filesystem.
+	//
+	// "Cards dir unchanged" is necessary but not sufficient: after we
+	// dispatch a ticket we bump the dir mtime ourselves (frontmatter
+	// write), and we save that fresh mtime as the cursor. The next tick
+	// then sees cursor == current mtime even though openReady > 0 and
+	// the engine still has capacity to drain more of the queue. To avoid
+	// stalling on our own write, also require either an empty ready
+	// queue OR all capped engines saturated before taking the fast path.
 	state := loadTickState(baseDir)
 	now := time.Now()
 	cardsMtime, cardsMtimeErr := cardsDirMtime(baseDir)
@@ -70,8 +87,13 @@ func cmdTick(args []string) error {
 	stallWindowOpen := now.Sub(state.LastStallCheckAt) >= stallCheckInterval
 
 	if dirUnchanged && !stallWindowOpen {
-		fmt.Fprintln(stdout, "tick: no-change skip")
-		return nil
+		if fastPathSafeToSkip(state, cfg) {
+			fmt.Fprintln(stdout, "tick: no-change skip")
+			return nil
+		}
+		// Else: cached counts show queued work with available capacity.
+		// Fall through and run phases so the queue drains at
+		// max_dispatch_per_tick per tick interval.
 	}
 
 	docs, err := loadAllTicketDocs(baseDir)
@@ -131,6 +153,18 @@ func cmdTick(args []string) error {
 	} else if cardsMtimeErr == nil {
 		state.LastCardsMtime = cardsMtime
 	}
+
+	// Re-scan docs after phase execution so the fast-path cache on the
+	// next tick reflects the post-dispatch reality (a ticket we just
+	// dispatched moved from open → dispatched and its weight should be
+	// counted toward the engine it landed on). Failing the reload is
+	// non-fatal — we simply don't update the cache for this tick and
+	// the next tick will fall through and re-check the truth.
+	if refreshed, refreshErr := loadAllTicketDocs(baseDir); refreshErr == nil {
+		state.LastOpenReady = countOpenReady(refreshed)
+		state.LastEngineWeights = buildEngineWeightMapFromDocs(refreshed, cfg)
+	}
+
 	if err := saveTickState(baseDir, state); err != nil {
 		fmt.Fprintf(stderr, "warning: save tick state: %v\n", err)
 	}
@@ -167,6 +201,60 @@ func cardsDirMtime(baseDir string) (time.Time, error) {
 		}
 	}
 	return latest, nil
+}
+
+// fastPathSafeToSkip returns true when the cached state from the previous
+// tick proves there's nothing actionable right now: either no open-ready
+// tickets exist OR every configured engine has already hit its weight cap.
+//
+// Backward-compat: old .tick-state files written before this field existed
+// deserialize with LastEngineWeights == nil. Treat nil as "cache not yet
+// populated" and always fall through on the first post-upgrade tick; the
+// subsequent tick will have a populated cache and can short-circuit
+// correctly. Otherwise we could silently skip real work the first time
+// the upgraded binary runs against a pre-existing cursor.
+//
+// An engine is considered saturated only if (a) it has a cap in
+// cfg.Concurrency AND (b) LastEngineWeights[engine] >= cap. Engines
+// without a cap are treated as always-available (infinite capacity).
+// If any configured engine is not saturated, we assume the queue might
+// have work for it and fall through — better a redundant phase run
+// than a stalled queue.
+func fastPathSafeToSkip(state tickState, cfg config.Config) bool {
+	if state.LastEngineWeights == nil {
+		return false
+	}
+	if state.LastOpenReady == 0 {
+		return true
+	}
+	if len(cfg.Concurrency) == 0 {
+		// No caps configured anywhere → anything can be dispatched.
+		return false
+	}
+	for engine, cap := range cfg.Concurrency {
+		if cap <= 0 {
+			continue
+		}
+		if state.LastEngineWeights[engine] < cap {
+			return false
+		}
+	}
+	return true
+}
+
+// countOpenReady counts open tickets that are not manual. Matches the
+// predicate that dispatch_ready uses to decide which tickets are eligible
+// for auto-dispatch (scope-emptiness and dependency readiness are checked
+// downstream; for fast-path caching we only need a conservative upper
+// bound that shrinks when open tickets complete or become manual).
+func countOpenReady(docs []TicketDoc) int {
+	n := 0
+	for _, td := range docs {
+		if td.Doc.Card.Status == frontmatter.StatusOpen && !td.Doc.Card.Manual {
+			n++
+		}
+	}
+	return n
 }
 
 func tickStatePath(baseDir string) string {
