@@ -169,24 +169,39 @@ func (s *ShellDispatcher) Dispatch(opts DispatchOptions) (*DispatchResult, error
 		return nil, fmt.Errorf("start %q: %w", s.binPath(), err)
 	}
 
-	// Read the first JSON object from stdout. agent-mux --async emits this
-	// immediately on dispatch:
+	drainAndWait := func() {
+		go func() {
+			_, _ = io.Copy(io.Discard, stdoutPipe)
+			_ = cmd.Wait()
+		}()
+	}
+
+	// Read JSON objects until agent-mux confirms the async worker has started.
+	// agent-mux may emit preview JSON before the async_started response:
 	//   {"schema_version":1,"kind":"async_started","dispatch_id":"...","artifact_dir":"..."}
 	var result DispatchResult
 	dec := json.NewDecoder(stdoutPipe)
-	if err := dec.Decode(&result); err != nil {
-		// If JSON decode fails, try to reap the process to get stderr.
-		_ = cmd.Wait()
-		return nil, fmt.Errorf("parse %q async response: %w", s.binPath(), err)
+	for {
+		var next DispatchResult
+		if err := dec.Decode(&next); err != nil {
+			// If JSON decode fails, try to reap the process to get stderr.
+			_ = cmd.Wait()
+			return nil, fmt.Errorf("failed to decode async_started: %w", err)
+		}
+		if next.Kind == "async_started" {
+			result = next
+			break
+		}
+	}
+	if result.DispatchID == "" {
+		drainAndWait()
+		return nil, fmt.Errorf("async_started had empty dispatch_id")
 	}
 
 	// We have the dispatch_id. Drain remaining stdout in the background
 	// so agent-mux doesn't get SIGPIPE when writing subsequent responses
-	// (e.g., the async_started JSON). The goroutine also reaps the process.
-	go func() {
-		_, _ = io.Copy(io.Discard, stdoutPipe)
-		_ = cmd.Wait()
-	}()
+	// after async_started. The goroutine also reaps the process.
+	drainAndWait()
 
 	return &result, nil
 }

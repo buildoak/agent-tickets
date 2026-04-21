@@ -2,6 +2,7 @@ package dispatch
 
 // DispatchResult holds the response from dispatching a ticket to agent-mux.
 type DispatchResult struct {
+	Kind       string `json:"kind"`
 	DispatchID string `json:"dispatch_id"`
 	SessionID  string `json:"session_id"`
 }

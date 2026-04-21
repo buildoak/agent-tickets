@@ -249,6 +249,10 @@ path. The floor dropped to 1s after the fix landed; the remaining stagger
 is only light protection against Codex/OpenAI rate-limit spikes when
 dispatching many IDs at once.
 
+Dispatch parsing note: `agent-mux --async` may emit preview JSON before the
+worker starts. `tickets dispatch` ignores non-`async_started` JSON and records
+the `dispatch_id` from the `kind=async_started` event only.
+
 ### Dry run
 
 Always available for validation:

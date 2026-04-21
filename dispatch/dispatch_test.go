@@ -328,6 +328,40 @@ func TestShellDispatcherStatusBuildsArgs(t *testing.T) {
 	}
 }
 
+func TestShellDispatcherDispatchSkipsPreviewUntilAsyncStarted(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	script := filepath.Join(dir, "agent-mux.sh")
+	scriptBody := `#!/bin/sh
+printf '%s\n' '{"schema_version":1,"kind":"preview","dispatch_id":"preview-dispatch","dispatch":{"dispatch_id":"nested-preview"}}'
+printf '%s\n' '{"schema_version":1,"kind":"async_started","dispatch_id":"real-dispatch"}'
+`
+	if err := os.WriteFile(script, []byte(scriptBody), 0o755); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+
+	ticketPath := filepath.Join(dir, "ticket.md")
+	if err := os.WriteFile(ticketPath, []byte("# Ticket\n"), 0o644); err != nil {
+		t.Fatalf("write ticket: %v", err)
+	}
+
+	dispatcher := NewShellDispatcher(script)
+	result, err := dispatcher.Dispatch(DispatchOptions{
+		Profile:    "default",
+		TicketPath: ticketPath,
+		WorkDir:    dir,
+	})
+	if err != nil {
+		t.Fatalf("Dispatch() error = %v", err)
+	}
+
+	want := &DispatchResult{Kind: "async_started", DispatchID: "real-dispatch"}
+	if !reflect.DeepEqual(result, want) {
+		t.Fatalf("Dispatch() = %#v, want %#v", result, want)
+	}
+}
+
 func TestShellDispatcherRunJSONIncludesStderr(t *testing.T) {
 	t.Parallel()
 

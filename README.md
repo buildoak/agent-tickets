@@ -231,7 +231,7 @@ Config notes:
 cmd/tickets/     CLI — 20 commands, each in its own file. Router in main.go.
 frontmatter/     YAML frontmatter parser. Byte-exact round-trip preservation.
 fsm/             State machine. Single source of truth for lifecycle rules.
-dispatch/        Dispatcher interface. Shell (agent-mux) + mock for tests.
+dispatch/        Dispatcher interface. Shell (agent-mux) + mock for tests. Shell dispatch reads agent-mux --async JSON until kind=async_started, ignoring preview output.
 config/          TOML config. Loads .tickets.toml, applies layered defaults, stall timeouts, profile engine/model maps, and guardian settings.
 ```
 

@@ -18,7 +18,7 @@ Tests live in `cmd/tickets/main_test.go` — integration-style, exercise the ful
 | `cmd/tickets/` | CLI commands. One file per command (e.g., `dispatch_cmd.go`, `complete.go`). Router in `main.go`. Shared helpers in `helpers.go`. |
 | `frontmatter/` | YAML frontmatter parsing with **byte-exact round-trip**. Parses markdown into `Document` (Card struct + body sections). Writes back without mutating untouched content. |
 | `fsm/` | State machine. Defines valid states (`open`, `dispatched`, `done`, `failed`, `blocked`, `closed`) and transitions. Single source of truth for lifecycle rules. |
-| `dispatch/` | Dispatcher interface. `shell.go` shells out to agent-mux CLI. `mock.go` for tests. Commands never call agent-mux directly. |
+| `dispatch/` | Dispatcher interface. `shell.go` shells out to agent-mux CLI and waits for the `kind=async_started` JSON event, skipping preview output. `mock.go` for tests. Commands never call agent-mux directly. |
 | `config/` | TOML config parsing. Loads `.tickets.toml`, applies layered defaults, stall timeouts, profile engine/model maps, and guardian settings. |
 
 ## Key Invariants
