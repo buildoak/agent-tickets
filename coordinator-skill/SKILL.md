@@ -79,7 +79,7 @@ Both fields can coexist on one ticket; both must be satisfied before dispatch. M
 | `RECON` | Unattended research, pre-initiative exploration |
 | `SERENDIPITY` | Serendipity capture, enrichment, compounding |
 | `OPS` | Operational/infrastructure tasks |
-| `PAPER-OPS` | Paper ingestion, analysis, and synthesis (any domain) |
+| `PAPER-OPS` | Paper ingestion, analysis, and synthesis (any domain). **Engine: Codex gpt-5.4 xhigh** (gemini deprioritized 2026-04-21 — see `INITIATIVES/PAPER-OPS.md`). |
 
 Each initiative doc at `centerpiece/tickets/INITIATIVES/{NAME}.md` carries dispatch defaults, operational context, and worker onboarding. Read the initiative doc before dispatching.
 
@@ -217,7 +217,7 @@ model   = "gpt-5.4-mini"
 effort  = "xhigh"
 profile = "jenkins-junior"
 max_retry = 3
-stagger_seconds = 15
+stagger_seconds = 2
 ```
 
 ### Concurrency limits
@@ -236,7 +236,18 @@ stagger_seconds = 15
 
 Comma-separated IDs: `tickets dispatch RECON-010,RECON-011,RECON-012`
 
-Stagger: 15s pause between each dispatch in a batch (configurable via `stagger_seconds`). Prevents overloading the engine.
+Manual multi-ID dispatch serializes calls with a small inter-dispatch sleep
+(`cfg.StaggerSeconds` with a 1s floor by default). Solo dispatch never sleeps.
+Set `--stagger-seconds=0` to disable entirely, or pass an explicit `N` to
+override both config and floor.
+
+Historical note: the original 15s floor existed because agent-mux `--async`
+did not daemonize and attached children were SIGKILL'd on parent exit. That
+root cause was fixed in agent-mux v3.4.1 (commit `c37febe`, 2026-04-21) —
+`--async` now detaches and the parent-death reaper is gated off on that
+path. The floor dropped to 1s after the fix landed; the remaining stagger
+is only light protection against Codex/OpenAI rate-limit spikes when
+dispatching many IDs at once.
 
 ### Dry run
 
@@ -316,7 +327,13 @@ The tick scheduler (`tickets tick` via LaunchAgent) runs `dispatch-ready` which 
 8. Monitor via `tickets board` or `tickets list --status dispatched`.
 9. Reconcile handles completion. Review result on the card.
 
-**Why this matters:** Codex kills processes with SIGTERM when too many instances launch simultaneously. Bulk manual dispatches (7+ at once) cause instant `killed_by_user` failures with 0 tokens consumed. The scheduler's stagger and caps prevent this.
+**Why this matters:** Bulk manual dispatches cause instant `killed_by_user`
+failures with 0 tokens consumed. Mechanism is NOT "Codex kills processes with
+SIGTERM" (earlier hypothesis) — it's the agent-mux parent-death reaper firing
+SIGKILL on attached codex process groups when the `tickets` binary exits (see
+§4 batch-dispatch known-bug note). The scheduler's stagger and concurrency caps
+prevent this because each `agent-mux` call is spaced enough that each `tickets`
+invocation exits cleanly with only one active child.
 
 ---
 

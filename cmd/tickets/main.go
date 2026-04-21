@@ -378,7 +378,7 @@ Flags:
   --engine STRING          Engine override: codex, claude, gemini (default: card -> .tickets.toml)
   --model STRING           Model override (default: card -> .tickets.toml)
   --effort STRING          Effort level override (default: card -> .tickets.toml)
-  --stagger-seconds INT    Inter-dispatch delay when N>1 IDs are given (default: max(.tickets.toml stagger_seconds, 15); 0 disables; explicit >0 has no floor)
+  --stagger-seconds INT    Inter-dispatch delay when N>1 IDs are given (default: max(.tickets.toml stagger_seconds, 1); 0 disables; explicit >0 has no floor)
   --base DIR               Override tickets base directory
 
 Resolution cascade for profile/engine/model/effort:
@@ -389,11 +389,12 @@ Resolution cascade for profile/engine/model/effort:
 
 Multi-ID stagger:
   When more than one ticket ID is passed, dispatches are serialized with a
-  sleep between them. This is required because agent-mux --async does NOT
-  daemonize — the child stays attached to the tickets process and is killed
-  if the parent exits before codex finishes reading its prompt. The default
-  floor is 15s (matching stagger behavior used by dispatch-ready). Solo
-  dispatch is unaffected (no sleep, same as before).
+  small sleep between them (1s floor by default). Historical context: the
+  original 15s floor existed because agent-mux --async did not daemonize
+  and attached children were SIGKILL'd on parent exit. That was fixed in
+  agent-mux v3.4.1 (commit c37febe). The 1s floor is kept as light
+  protection against Codex/OpenAI rate-limit spikes on large batches; set
+  --stagger-seconds=0 to disable entirely. Solo dispatch never sleeps.
 
 Effects:
   - Calls agent-mux --async to start a background worker

@@ -27,15 +27,19 @@ func TestResolveDispatchStagger(t *testing.T) {
 		{"solo-flag-explicit", 1, 0, 30, 0},
 		{"zero-ids", 0, 15, -1, 0},
 
-		// Multi-ID, flag unset: apply 15s floor over cfg.
-		{"multi-cfg-zero-floor-applies", 3, 0, -1, 15},
-		{"multi-cfg-below-floor", 2, 10, -1, 15},
-		{"multi-cfg-at-floor", 2, 15, -1, 15},
-		{"multi-cfg-above-floor", 4, 30, -1, 30},
+		// Multi-ID, flag unset: apply 1s floor over cfg. The pre-2026-04-21
+		// agent-mux bug required 15s; the floor dropped to 1s once that was
+		// fixed in agent-mux v3.4.1 (commit c37febe) — kept non-zero only as
+		// light protection against rate-limit spikes on large batches.
+		{"multi-cfg-zero-floor-applies", 3, 0, -1, 1},
+		{"multi-cfg-below-floor", 2, 0, -1, 1},
+		{"multi-cfg-at-floor", 2, 1, -1, 1},
+		{"multi-cfg-above-floor", 4, 5, -1, 5},
+		{"multi-cfg-large", 4, 30, -1, 30},
 
 		// Multi-ID, flag explicit: flag wins, no floor.
 		{"multi-flag-zero-disables", 6, 15, 0, 0},
-		{"multi-flag-below-floor-wins", 3, 15, 5, 5},
+		{"multi-flag-below-cfg-wins", 3, 15, 3, 3},
 		{"multi-flag-above-cfg", 3, 10, 45, 45},
 	}
 

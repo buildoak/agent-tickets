@@ -171,7 +171,7 @@ All commands support `--help`. Run `tickets help <command>` for detailed usage.
 base_dir = "centerpiece/tickets"
 agent_mux_bin = "agent-mux"
 max_retry = 3
-stagger_seconds = 15
+stagger_seconds = 2
 max_dispatch_per_tick = 1
 skill_path = ""
 

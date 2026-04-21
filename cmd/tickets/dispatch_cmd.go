@@ -15,12 +15,14 @@ import (
 
 // multiIDStaggerFloor is the minimum inter-dispatch delay (seconds) applied
 // when >1 ticket is dispatched in a single invocation and the user did not
-// explicitly override --stagger-seconds. Exists because agent-mux --async
-// does not daemonize: the child stays attached to the tickets process and
-// is SIGKILL'd on parent exit via kqueue EVFILT_PROC|NOTE_EXIT. Without a
-// delay, firing N dispatches back-to-back then exiting tickets kills N-1
-// codex workers mid-startup.
-const multiIDStaggerFloor = 15
+// explicitly override --stagger-seconds. Historical context: the original
+// 15s floor existed because agent-mux --async did not daemonize and children
+// were SIGKILL'd on parent exit. That root cause was fixed in agent-mux
+// v3.4.1 (commit c37febe, 2026-04-21) — `--async` now properly detaches and
+// the reaper is gated off. The floor is retained at a small value only as
+// light protection against Codex/OpenAI rate-limit spikes when dispatching
+// many IDs at once; set --stagger-seconds=0 to disable entirely.
+const multiIDStaggerFloor = 1
 
 var dispatcher dispatch.Dispatcher
 
@@ -55,7 +57,7 @@ func cmdDispatch(args []string) error {
 	model := fs.String("model", "", "model")
 	effort := fs.String("effort", "", "effort")
 	// -1 sentinel means "not set on CLI"; 0 means "explicitly disable stagger".
-	staggerFlag := fs.Int("stagger-seconds", -1, "seconds to sleep between dispatches when multiple IDs are given (0 disables; unset applies a 15s floor over config)")
+	staggerFlag := fs.Int("stagger-seconds", -1, "seconds to sleep between dispatches when multiple IDs are given (0 disables; unset applies cfg.stagger_seconds with a 1s floor)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -120,7 +122,7 @@ func cmdDispatch(args []string) error {
 //   - idsCount <= 1  → no stagger, never
 //   - flagVal == 0   → caller explicitly disabled (no floor applied)
 //   - flagVal > 0    → caller-provided value wins verbatim (no floor)
-//   - flagVal < 0    → unset on CLI; use cfg.StaggerSeconds with a 15s floor
+//   - flagVal < 0    → unset on CLI; use cfg.StaggerSeconds with a 1s floor
 //
 // Returns the stagger seconds plus a human-readable source string used in
 // the stdout announcement.
