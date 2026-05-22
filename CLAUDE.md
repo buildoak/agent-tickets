@@ -55,7 +55,7 @@ Tests live in `cmd/tickets/main_test.go` — integration-style, exercise the ful
 
 ## Code Conventions
 
-- **Error messages are user-facing.** Lowercase, no periods, include ticket ID. Example: `"ticket RECON-005 is not dispatched (status: open)"`
+- **Error messages are user-facing.** Lowercase, no periods, include ticket ID. Example: `"ticket TASK-005 is not dispatched (status: open)"`
 - **Pointer fields in Card** = optional/nullable YAML fields. Non-pointer = always present.
 - **Minimal dependencies.** Only yaml.v3 and toml. No frameworks, no HTTP, no database.
 - **Test via CLI.** Tests exercise full command paths through `runCmd()`, not internal functions.

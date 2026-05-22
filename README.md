@@ -1,96 +1,144 @@
 # agent-tickets
 
-Filesystem-native ticket system for AI agent workflows. Markdown cards with YAML frontmatter, FSM-enforced lifecycle, agent-mux dispatch.
+I wanted a ticket system that did not become another place to manage work about work.
 
-No database. Cards are the source of truth. Git history is the audit trail.
+The itch was simple: AI agents are useful once the work unit is clear, bounded, and recoverable. A chat message is too soft. A full project-management app is too much furniture. So `agent-tickets` keeps the thing in the boring place that already works: markdown files in your repo, with YAML frontmatter for the parts machines need to trust.
 
-## Why
+Cards are the database. Git history is the audit trail. The state machine is the guardrail.
 
-AI agents need structured work units between "just do it" and full project management. agent-tickets gives you:
+## What It Is
 
-- **Markdown cards** — human-readable, git-tracked, zero infrastructure
-- **FSM lifecycle** — tickets move through validated state transitions, not arbitrary status strings
-- **Agent-mux dispatch** — fire-and-forget worker dispatch with automatic reconciliation
-- **Initiative routing** — group tickets by domain with per-initiative defaults and worker onboarding
+`agent-tickets` is a Go CLI for filesystem-native agent work:
+
+- Markdown ticket cards with YAML frontmatter
+- Initiative folders for grouping related work
+- A finite-state lifecycle: `open`, `dispatched`, `done`, `failed`, `blocked`, `closed`
+- Hard dependencies with `depends_on`
+- Soft completion gates with `awaits`
+- Optional `agent-mux` dispatch and reconciliation
+- Offline-friendly create/list/board workflows
+
+No server. No database. No queue service hiding in the corner.
 
 ## Install
 
-```bash
-go build -o ~/.local/bin/tickets ./cmd/tickets
-```
+You need Go. The module currently targets Go `1.24.2`.
 
-## Quick Start
+Install the latest released CLI:
 
 ```bash
-# Create an initiative
-tickets init RESEARCH --title "Research tasks"
-
-# Create a ticket
-tickets create --initiative RESEARCH --title "Survey compression techniques" --tier worker
-
-# Edit the card — write Context and Scope sections
-tickets edit RESEARCH-001
-
-# Dispatch to a worker
-tickets dispatch RESEARCH-001
-
-# Check status
-tickets summary
-tickets board --status dispatched
-
-# Reconcile with agent-mux (sync worker results)
-tickets reconcile
+go install github.com/buildoak/agent-tickets/cmd/tickets@latest
 ```
 
-## Card Format
+Or build from a local checkout:
+
+```bash
+git clone https://github.com/buildoak/agent-tickets.git
+cd agent-tickets
+go build -o ./tickets ./cmd/tickets
+```
+
+If you build locally, either run `./tickets ...` from the checkout or move the binary somewhere on your `PATH`.
+
+## Quickstart
+
+This quickstart does not require `agent-mux`. It creates a local ticket tree under `./tickets`.
+
+```bash
+mkdir ticket-demo
+cd ticket-demo
+
+cat > .tickets.toml <<'TOML'
+base_dir = "tickets"
+max_retry = 3
+
+[stall_timeout_minutes]
+worker = 30
+deep = 45
+heavy = 60
+TOML
+
+tickets init DEMO --title "Demo work"
+tickets create --initiative DEMO --title "Write the first scoped card" --tier worker
+tickets board
+tickets show DEMO-001
+```
+
+Now edit `tickets/cards/DEMO/DEMO-001.md` and fill in `## Scope`.
+
+```bash
+tickets list --initiative DEMO --status open
+```
+
+That is the offline loop: create cards, inspect them, move them through explicit states when needed, and keep everything reviewable in git.
+
+## Dispatch Is Optional
+
+`agent-mux` is only needed when you want tickets to launch workers or reconcile worker results.
+
+Without `agent-mux`, these workflows still work:
+
+- `init`
+- `create`
+- `show`
+- `list`
+- `board`
+- `summary`
+- `initiatives`
+- manual lifecycle commands such as `block`, `close`, and `reopen`
+
+With `agent-mux` installed and configured, `tickets dispatch`, `tickets dispatch-ready`, `tickets reconcile`, and `tickets tick` can hand eligible cards to async workers and pull their status back into the markdown cards.
+
+Tests use a mock dispatcher, so the core CLI behavior can be verified without a live runtime.
+
+## The Card
+
+A ticket is a markdown file with structured frontmatter and human-readable sections.
 
 ```markdown
 ---
-id: RESEARCH-001
-initiative: RESEARCH
-title: Survey compression techniques
+id: DEMO-001
+initiative: DEMO
+title: Write the first scoped card
 status: open
 tier: worker
-tags: [research, compression]
-created: "2026-04-12"
-skills: [web-search]
+tags: []
+created: "2026-05-22"
+manual: false
 depends_on: []
-awaits: []          # soft dependencies (terminal-state gating)
+awaits: []
+skills: []
+attempts: 0
 ---
 
 ## Context
-Brief onboarding for a zero-context worker.
-What files to read, what background to know.
+
+What a zero-context worker needs to know.
 
 ## Scope
-What to deliver + definition of done.
-Not step-by-step instructions — the worker decides how.
+
+The deliverable and the definition of done.
 
 ## Result
-[filled by worker]
+
+Filled by the worker or by the human closing the loop.
 
 ## Log
-[operational history — archived results, retry notes]
+
+open -- created
 ```
 
-Optional frontmatter fields used by the runtime include `plan_ref`, `profile`, `dispatch_id`, `session_id`, `dispatched_at`, `last_attempt_outcome`, and `block_reason`.
+The important bit is not the YAML per se. It is that humans and agents are looking at the same object. No hidden database state, no separate dashboard truth.
 
-### Dependencies
+## Lifecycle
 
-- `depends_on: [A, B]` — hard gate. All listed tickets must reach `done` before dispatch.
-- `awaits: [A, B]` — soft gate. All listed tickets must reach any terminal state (`done`, `failed`, `blocked`, `closed`).
-
-Use `depends_on` when you need upstream output. Use `awaits` when you need upstream completion regardless of outcome (audits, reports, cleanup). Both fields can coexist; both must be satisfied.
-
-## State Machine
-
-```
+```text
 open ──dispatch──> dispatched ──complete──> done
   │                    │                     │
   │                    ├──fail────> failed    ├──reopen──> open
   │                    │             │        └──close───> closed
   │                    └──cancel──> open
-  │                                  │
+  │
   ├──block──> blocked ──reopen──> open
   │
   └──close──> closed
@@ -100,75 +148,64 @@ failed ──reopen──> open
        ──close───> closed
 ```
 
-**Six states:** `open`, `dispatched`, `done`, `failed`, `blocked`, `closed`
+`depends_on` is strict: every dependency must be `done`.
 
-| State | Meaning |
-|-------|---------|
-| `open` | Ready for work or dispatch |
-| `dispatched` | Worker is running |
-| `done` | Worker completed successfully |
-| `failed` | Worker failed (retryable via reopen) |
-| `blocked` | Stuck on external dependency or needs human input |
-| `closed` | Conceptually dead — never retry (distinct from failed) |
+`awaits` is softer: every awaited ticket must be terminal, meaning `done`, `failed`, `blocked`, or `closed`. This is useful for audit batches, cleanup passes, or reports where completion matters more than success.
 
-**Terminal states** (for `awaits` gating): `done`, `failed`, `blocked`, `closed`. **Non-terminal:** `open`, `dispatched`.
+After `max_retry` consecutive failures, a ticket auto-blocks instead of looping forever. Quiet guardrail. Properly useful.
 
-Auto-block: after `max_retry` (default 3) consecutive failures, ticket auto-blocks.
+## Command Map
 
-## CLI Reference
+Lifecycle:
 
-### Lifecycle
+| Command | What it does |
+| --- | --- |
+| `init` | Create an initiative and its card directory |
+| `create` | Create a ticket under an initiative |
+| `dispatch` | Send open ticket(s) to `agent-mux` |
+| `complete` | Mark a dispatched ticket as done |
+| `fail` | Mark a dispatched ticket as failed |
+| `cancel` | Return a dispatched ticket to open |
+| `reopen` | Reopen a failed, done, or blocked ticket |
+| `block` | Mark a ticket blocked with a reason |
+| `close` | Permanently close a ticket |
 
-| Command | Description |
-|---------|-------------|
-| `create` | Create a new ticket card under an initiative (`--awaits A,B` for soft deps) |
-| `dispatch` | Dispatch ticket(s) to agent-mux workers |
-| `complete` | Mark dispatched ticket as done (called by worker) |
-| `fail` | Mark dispatched ticket as failed with reason (called by worker) |
-| `cancel` | Cancel dispatched ticket, return to open |
-| `reopen` | Reopen failed/done/blocked ticket for retry |
-| `block` | Block ticket with a reason |
-| `close` | Permanently close ticket (conceptual death) |
+Automation:
 
-### Automation
+| Command | What it does |
+| --- | --- |
+| `dispatch-ready` | Dispatch eligible open tickets |
+| `reconcile` | Sync dispatched tickets from `agent-mux` status |
+| `tick` | Run one automation cycle: reconcile, stall detection, dispatch-ready |
 
-| Command | Description |
-|---------|-------------|
-| `tick` | One automation cycle: reconcile + stall-detect + dispatch-ready (with dir-mtime fast-path) |
-| `reconcile` | Sync dispatched tickets with agent-mux status, trusting `## Result` over raw exit status when they disagree |
-| `dispatch-ready` | Auto-dispatch eligible open tickets (hard + soft deps met, scope filled) |
+Queries:
 
-`tick` is cheap when the tree is idle. It stats the `cards/` tree mtime on wake and, if nothing changed since the persisted `.tick-state` cursor, exits with `tick: no-change skip`. A 9-minute stall-check cursor (independent of dir mtime) ensures slow workers don't hide behind an idle filesystem. When phases do run, cards are parsed exactly once and the slice is shared across reconcile/stall/dispatch-ready. Phases also early-exit when their precondition isn't met (no dispatched cards → skip reconcile; no open-ready cards → skip dispatch-ready).
+| Command | What it does |
+| --- | --- |
+| `show` | Print one card as markdown or JSON |
+| `list` | List cards with filters |
+| `board` | Show a kanban-style board |
+| `summary` | Print compact status counts by initiative |
+| `initiatives` | List initiatives and ticket counts |
 
-Stall detection runs inside `tick`: dispatched tickets that exceed their timeout are warned with `[STALL_WARNING]` and auto-failed. Timeouts come from per-tier defaults, can be overridden per initiative in config, and fall back to the last `dispatched --` log timestamp if `dispatched_at` is missing.
+Maintenance:
 
-### Queries
+| Command | What it does |
+| --- | --- |
+| `edit` | Open a card in `$EDITOR` and validate it on save |
+| `delete` | Delete a ticket, optionally cascading dependents |
+| `migrate` | Move a ticket to another initiative and rewrite dependencies |
 
-| Command | Description |
-|---------|-------------|
-| `show` | Display a single ticket (raw or JSON) |
-| `list` | List tickets with filters |
-| `board` | Kanban-style board view (shows `(awaits)` suffix for unresolved soft deps; `done` annotation is blank) |
-| `summary` | Status counts by initiative (agent-friendly, ~100 tokens) |
-| `initiatives` | List all initiatives with ticket counts |
-
-### Maintenance
-
-| Command | Description |
-|---------|-------------|
-| `init` | Create a new initiative with directory structure |
-| `edit` | Edit ticket in $EDITOR with validation on save |
-| `delete` | Delete ticket (--cascade for dependents) |
-| `migrate` | Move ticket to different initiative, rewrite deps |
-
-All commands support `--help`. Run `tickets help <command>` for detailed usage.
+Run `tickets <command> --help` for command-specific flags.
 
 ## Configuration
 
-`.tickets.toml` at repo root:
+`tickets` looks for `.tickets.toml` in the current directory or any ancestor.
+
+For public or team use, set `base_dir` explicitly:
 
 ```toml
-base_dir = "centerpiece/tickets"
+base_dir = "tickets"
 agent_mux_bin = "agent-mux"
 max_retry = 3
 stagger_seconds = 2
@@ -176,10 +213,10 @@ max_dispatch_per_tick = 1
 skill_path = ""
 
 [defaults]
+profile = "ticket-worker"
 engine = "codex"
-model = "gpt-5.4-mini"
-effort = "xhigh"
-profile = "jenkins-junior"
+model = "your-model-name"
+effort = "high"
 
 [stall_timeout_minutes]
 worker = 30
@@ -187,59 +224,80 @@ deep = 45
 heavy = 60
 
 [concurrency]
-codex = 5
-claude = 3
-gemini = 2
+codex = 3
+claude = 2
 
 [model_weight]
-"gpt-5.4-mini" = 1
+your-model-name = 1
 
 [profile_engine]
-jenkins-junior = "codex"
+ticket-worker = "codex"
 
 [profile_model]
-jenkins-junior = "gpt-5.4-mini"
+ticket-worker = "your-model-name"
 
-# Per-initiative stall override. default_profile and default_skills are set in
-# INITIATIVES/<NAME>.md frontmatter, not in .tickets.toml.
-[initiatives.PAPER-OPS]
-stall_timeout_minutes = 90
-
-[guardian]
-engine = "codex"
-model = "gpt-5.4-mini"
-effort = "high"
-profile = "jenkins-guardian"
-initiative = "OPS"
+[initiatives.DEMO]
+stall_timeout_minutes = 45
 ```
 
-Dispatch resolution:
-- `profile`: CLI flag -> card frontmatter -> initiative markdown `default_profile` -> `.tickets.toml` defaults
-- `skills`: CLI `--skills` -> initiative markdown `default_skills` -> empty
+Environment overrides:
+
+- `TICKETS_BASE_DIR`
+- `TICKETS_AGENT_MUX_BIN`
+- `TICKETS_STAGGER_SECONDS`
+
+Resolution rules for dispatch:
+
+- `profile`: CLI flag -> card frontmatter -> initiative `default_profile` -> `.tickets.toml` defaults
+- `skills`: CLI `--skills` -> initiative `default_skills` -> empty
 - `engine`, `model`, `effort`: CLI flag -> card frontmatter -> `.tickets.toml` defaults
 
-Config notes:
-- `skill_path` is loaded from config to carry a custom skill path setting.
-- `model_weight` and `[concurrency]` together control dispatch-ready engine weight caps.
-- `profile_engine` and `profile_model` map profile names to their effective engine/model for cap accounting when cards store `profile-defined`.
-- `initiatives.<NAME>.stall_timeout_minutes` overrides stall detection timeout for one initiative.
-- `[guardian]` enables guardian mode only when its required fields are fully populated.
+Initiative defaults live in `tickets/INITIATIVES/<NAME>.md` frontmatter, not in the config file.
+
+## Automation Notes
+
+`tick` is designed to be cheap enough for repeated runs:
+
+- It uses a file lock so overlapping automation cycles do not stampede the tree.
+- It skips work when the cards tree has not changed and the stall-check window has not elapsed.
+- When it does run, it parses cards once and shares that slice across reconcile, stall detection, and dispatch-ready.
+- Stall detection warns with `[STALL_WARNING]` and auto-fails timed-out dispatched tickets.
+
+Reconcile is intentionally conservative. It only asks `agent-mux` about cards in `dispatched`. Terminal cards are left alone.
+
+One practical detail I care about: if `agent-mux` reports failure but the card has a populated `## Result`, reconcile trusts the artifact and marks the ticket done. Generated status is not more real than the work sitting in the card.
 
 ## Architecture
 
+```text
+cmd/tickets/     CLI commands, one file per command
+frontmatter/     YAML frontmatter parser with byte-exact round-trip preservation
+fsm/             State machine and lifecycle transition rules
+dispatch/        Dispatcher interface, shell adapter for agent-mux, mock for tests
+config/          TOML loading, defaults, timeouts, profile/model accounting
 ```
-cmd/tickets/     CLI — 20 commands, each in its own file. Router in main.go.
-frontmatter/     YAML frontmatter parser. Byte-exact round-trip preservation.
-fsm/             State machine. Single source of truth for lifecycle rules.
-dispatch/        Dispatcher interface. Shell (agent-mux) + mock for tests. Shell dispatch reads agent-mux --async JSON until kind=async_started, ignoring preview output.
-config/          TOML config. Loads .tickets.toml, applies layered defaults, stall timeouts, profile engine/model maps, and guardian settings.
+
+Design constraints:
+
+- Cards are the source of truth.
+- State changes go through the FSM.
+- Commands use the dispatcher interface, never `agent-mux` directly.
+- Frontmatter edits preserve untouched bytes.
+- Dependencies stay small: YAML and TOML parsing, nothing heavier.
+
+## Development
+
+```bash
+go test ./...
+go build -o ./tickets ./cmd/tickets
 ```
 
-## Dependencies
+Tests are integration-style around the CLI command paths, plus focused package tests for frontmatter, dispatch, and the FSM.
 
-Minimal by design:
+## Why I Like This Shape
 
-- `gopkg.in/yaml.v3` — YAML frontmatter parsing
-- `github.com/BurntSushi/toml` — config file parsing
+The point is not to recreate Jira in markdown. The point is to give agents a crisp work object and give humans a thing they can review, diff, retry, archive, and trust.
 
-No frameworks. No HTTP. No database drivers.
+Small enough to understand. Structured enough to automate. Boring enough to keep using after the initial enthusiasm wears off.
+
+P.S. The nice part is that the ticket file can be pasted directly into an agent as the prompt. That was not an accident.

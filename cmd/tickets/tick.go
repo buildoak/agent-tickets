@@ -18,8 +18,8 @@ import (
 // stallCheckInterval forces the stall phase to run even when the cards
 // directory is unchanged. Stall timeouts are measured in minutes, so a
 // pure dir-mtime cursor would let slow dispatches hide behind idle
-// periods. 9 minutes is well under the shortest stall timeout (20 min
-// for GUARDIAN) so we never miss a transition by more than one cycle.
+// periods. 9 minutes is well under common stall timeout overrides, so we
+// never miss a transition by more than one cycle.
 const stallCheckInterval = 9 * time.Minute
 
 // tickState is the persisted cursor that lets `tick` skip full phase

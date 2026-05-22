@@ -10,10 +10,10 @@ import (
 )
 
 const (
-	defaultBaseDir     = "centerpiece/tickets"
+	defaultBaseDir     = "tickets"
 	defaultAgentMuxBin = "agent-mux"
 	defaultMaxRetry    = 3
-	defaultProfile     = "jenkins-junior"
+	defaultProfile     = "ticket-worker"
 )
 
 type Config struct {

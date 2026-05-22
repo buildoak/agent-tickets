@@ -233,7 +233,7 @@ Usage:
   tickets init INITIATIVE --title "Initiative title"
 
 Arguments:
-  INITIATIVE       Initiative identifier (e.g. PAPER-OPS, RECON). Used as directory name.
+  INITIATIVE       Initiative identifier (e.g. RESEARCH, BUILD). Used as directory name.
 
 Flags:
   --title STRING   (required) Human-readable title for the initiative
@@ -244,7 +244,7 @@ Creates:
   - cards/<INITIATIVE>/ directory for ticket files
 
 Example:
-  tickets init PAPER-OPS --title "Paper processing pipeline"
+  tickets init RESEARCH --title "Paper processing pipeline"
 `,
 
 	"create": `tickets create — create a new ticket card
@@ -257,7 +257,7 @@ Flags:
   --title STRING        (required) Ticket title / one-line description
   --tier STRING         (required) Execution tier: worker, deep, or heavy
   --manual              Mark as manual (excluded from auto-dispatch)
-  --depends-on IDS      Comma-separated ticket IDs this depends on (e.g. "RECON-001,RECON-002")
+  --depends-on IDS      Comma-separated ticket IDs this depends on (e.g. "BUILD-001,BUILD-002")
   --awaits IDS          Comma-separated ticket IDs to soft-wait on (dispatches once all are terminal)
   --skills SKILLS       Comma-separated skill names for the worker
   --base DIR            Override tickets base directory
@@ -268,12 +268,12 @@ Tier descriptions:
   heavy     Multi-step or coordinator-level task
 
 Output:
-  Prints the new ticket ID to stdout (e.g. "PAPER-OPS-003").
+  Prints the new ticket ID to stdout (e.g. "RESEARCH-003").
 
 Example:
-  tickets create --initiative PAPER-OPS --title "Extract methods from paper" --tier worker
-  tickets create --initiative RECON --title "Deep analysis" --tier deep --depends-on RECON-001
-  tickets create --initiative GUARDIAN --title "Audit batch" --tier worker --awaits PAPER-OPS-010,PAPER-OPS-011
+  tickets create --initiative RESEARCH --title "Extract methods from paper" --tier worker
+  tickets create --initiative BUILD --title "Deep analysis" --tier deep --depends-on BUILD-001
+  tickets create --initiative AUDIT --title "Audit batch" --tier worker --awaits RESEARCH-010,RESEARCH-011
 `,
 
 	"show": `tickets show — display a single ticket
@@ -282,7 +282,7 @@ Usage:
   tickets show TICKET-ID [flags]
 
 Arguments:
-  TICKET-ID       Ticket identifier (e.g. PAPER-OPS-003)
+  TICKET-ID       Ticket identifier (e.g. RESEARCH-003)
 
 Flags:
   --json          Output as JSON with board annotations (status, detail)
@@ -293,8 +293,8 @@ Output:
   With --json: JSON object with card fields, annotation, and detail.
 
 Example:
-  tickets show PAPER-OPS-003
-  tickets show PAPER-OPS-003 --json
+  tickets show RESEARCH-003
+  tickets show RESEARCH-003 --json
 `,
 
 	"list": `tickets list — list tickets with filters
@@ -315,7 +315,7 @@ Output:
 
 Example:
   tickets list
-  tickets list --initiative PAPER-OPS --status open
+  tickets list --initiative RESEARCH --status open
   tickets list --status dispatched --json
 `,
 
@@ -339,7 +339,7 @@ Output:
 
 Example:
   tickets board
-  tickets board --initiative PAPER-OPS
+  tickets board --initiative RESEARCH
   tickets board --json
 `,
 
@@ -403,9 +403,9 @@ Effects:
   - Appends dispatch event to ## Log section
 
 Example:
-  tickets dispatch PAPER-OPS-003
-  tickets dispatch RECON-001,RECON-002 --engine claude --model opus-4
-  tickets dispatch PAPER-OPS-005 --profile ticket-worker-heavy
+  tickets dispatch RESEARCH-003
+  tickets dispatch BUILD-001,BUILD-002 --engine claude --model opus-4
+  tickets dispatch RESEARCH-005 --profile ticket-worker-heavy
   tickets dispatch A-001,B-002,C-003 --stagger-seconds 30   # explicit override
   tickets dispatch A-001,B-002 --stagger-seconds 0          # disable stagger (advanced)
 `,
@@ -519,7 +519,7 @@ Effects:
   - Appends completion event to ## Log
 
 Example:
-  tickets complete PAPER-OPS-003
+  tickets complete RESEARCH-003
 `,
 
 	"fail": `tickets fail — mark a ticket as failed
@@ -541,7 +541,7 @@ Effects:
   - Appends failure event to ## Log
 
 Example:
-  tickets fail PAPER-OPS-003 --reason "PDF extraction timed out"
+  tickets fail RESEARCH-003 --reason "PDF extraction timed out"
 `,
 
 	"cancel": `tickets cancel — cancel a dispatched ticket
@@ -563,7 +563,7 @@ Effects:
   - Appends cancellation event to ## Log
 
 Example:
-  tickets cancel PAPER-OPS-003 --reason "Wrong engine selected"
+  tickets cancel RESEARCH-003 --reason "Wrong engine selected"
 `,
 
 	"reopen": `tickets reopen — reopen a ticket for another attempt
@@ -585,7 +585,7 @@ Effects:
   - Clears ## Result section for the next attempt
 
 Example:
-  tickets reopen PAPER-OPS-003
+  tickets reopen RESEARCH-003
 `,
 
 	"close": `tickets close — permanently close a ticket
@@ -614,8 +614,8 @@ Effects:
   - Appends closure event to ## Log
 
 Example:
-  tickets close PAPER-OPS-029 --reason "source-not-found: no DOI, no accessible source"
-  tickets close PAPER-OPS-040 --reason "format-mismatch: textbook, not a paper"
+  tickets close RESEARCH-029 --reason "source-not-found: no DOI, no accessible source"
+  tickets close RESEARCH-040 --reason "format-mismatch: textbook, not a paper"
 `,
 
 	"block": `tickets block — block a ticket
@@ -638,7 +638,7 @@ Effects:
 Use 'tickets reopen' to unblock.
 
 Example:
-  tickets block PAPER-OPS-003 --reason "Waiting for API key"
+  tickets block RESEARCH-003 --reason "Waiting for API key"
 `,
 
 	"edit": `tickets edit — open a ticket in $EDITOR
@@ -658,7 +658,7 @@ dependency graph (cycle detection, max depth 3).
 Requires $EDITOR environment variable to be set.
 
 Example:
-  tickets edit PAPER-OPS-003
+  tickets edit RESEARCH-003
 `,
 
 	"delete": `tickets delete — delete a ticket
@@ -678,8 +678,8 @@ With --cascade, deletes the entire dependency subtree (still refuses if any
 descendant is in 'dispatched' status).
 
 Example:
-  tickets delete PAPER-OPS-003
-  tickets delete PAPER-OPS-001 --cascade
+  tickets delete RESEARCH-003
+  tickets delete RESEARCH-001 --cascade
 `,
 
 	"summary": `tickets summary — compact status-count table by initiative
@@ -722,7 +722,7 @@ Effects:
   - Refuses if the ticket or any dependent is currently dispatched
 
 Example:
-  tickets migrate RECON-003 PAPER-OPS
-  tickets migrate RECON-003 PAPER-OPS --dry-run
+  tickets migrate BUILD-003 RESEARCH
+  tickets migrate BUILD-003 RESEARCH --dry-run
 `,
 }

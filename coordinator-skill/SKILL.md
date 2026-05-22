@@ -1,355 +1,370 @@
 ---
 name: ticket-work
 description: >
-  Coordinator playbook for authoring, dispatching, and managing tickets.
-  Read this when you need to create tickets from user asks, route them to
-  initiatives, dispatch workers, or monitor ticket lifecycle. Trigger: user
-  asks to create/dispatch/check tickets, or you need to turn a vague ask
-  into structured work.
+  Public playbook for using agent-tickets: create markdown ticket cards,
+  route work through initiatives, dispatch AI workers, monitor lifecycle
+  state, and reconcile async results. Use when a task should become a
+  durable ticket, dependency-aware worker dispatch, or ticket board review.
 ---
 
-# Ticket Work — Coordinator Playbook
+# Agent Tickets Coordinator Playbook
 
-Binary: `tickets` at `~/.local/bin/tickets`
-Run all CLI commands from repo root: `/Users/otonashi/thinking/pratchett-os/`
+Use this skill when coordinating work with the `tickets` CLI. The system is
+filesystem-native: markdown cards are the database, YAML frontmatter stores
+runtime state, and initiative docs carry per-domain routing context.
 
+Run commands from the repository that contains `.tickets.toml`, or set
+`TICKETS_BASE_DIR` when operating from elsewhere. The binary is normally
+available as `tickets`.
+
+## 1. Operating Model
+
+**Truth model:** cards are source of truth. Worker reports, dispatch status,
+and board summaries are witnesses. Accept work only after checking the card
+result against its scope and done gate.
+
+**Default flow:** create a clear ticket, leave it `open`, and let
+`tickets tick` or `tickets dispatch-ready` dispatch eligible work. Manually
+dispatch only when the user explicitly asks or the workflow requires it.
+
+**Before creating a ticket:**
+- Choose an existing initiative unless the user explicitly asks for a new one.
+- Read the initiative doc if it exists; it owns domain context, defaults, and
+  worker onboarding.
+- Decide whether the work actually needs a ticket. Trivial or interactive work
+  is usually better handled directly.
+
+**Safety gates:**
+- Do not dispatch a card with an empty `## Scope`.
+- Use `--dry-run` before batch dispatch, migration, or reconcile when uncertain.
+- Do not delete, close, or cascade tickets casually; those actions remove future
+  retry paths.
+- Respect configured concurrency caps; scheduler commands enforce them better
+  than ad hoc manual batches.
+
+## 2. Files And Card Format
+
+Common layout under the configured `base_dir`:
+
+| Surface | Path |
+|---------|------|
+| Cards | `cards/{INITIATIVE}/{ID}.md` |
+| Initiatives | `INITIATIVES/{NAME}.md` |
+| Config | `.tickets.toml` at repo root |
+
+Ticket IDs are `{INITIATIVE}-{seq:03d}`, for example `RESEARCH-001` or
+`BUILD-014`. Sequencing is per initiative.
+
+Cards use YAML frontmatter plus four markdown sections:
+
+```markdown
+---
+id: RESEARCH-001
+initiative: RESEARCH
+title: Survey vector database indexing tradeoffs
+status: open
+tier: worker
+tags: [research]
+created: "2026-01-01"
+manual: false
+plan_ref: null
+depends_on: []
+awaits: []
+skills: [web-search]
+dispatch_id: null
+session_id: null
+dispatched_at: null
+profile: null
+engine: null
+model: null
+effort: null
+attempts: 0
+last_attempt_outcome: null
+block_reason: null
 ---
 
-## 1. System Reference
+## Context
+Brief onboarding for a zero-context worker.
 
-**Paths:**
-- Cards: `centerpiece/tickets/cards/{INITIATIVE}/{ID}.md`
-- Initiatives: `centerpiece/tickets/INITIATIVES/{NAME}.md`
-- Config: `.tickets.toml` (repo root)
+## Scope
+What to deliver, plus a semantic definition of done.
 
-**Card format:** YAML frontmatter (`id`, `initiative`, `title`, `status`, `tier`, `tags`, `created`, `manual`, `plan_ref`, `depends_on`, `awaits`, `skills`, `dispatch_id`, `session_id`, `dispatched_at`, `profile`, `engine`, `model`, `effort`, `last_attempt_outcome`, `block_reason`) + four sections: `## Context`, `## Scope`, `## Result`, `## Log`.
+## Result
+[filled by worker]
 
-**IDs:** `{INITIATIVE}-{seq:03d}` (e.g., RECON-009, SERENDIPITY-003). Per-initiative sequencing.
+## Log
+[operational history, retry notes, archived results]
+```
 
-**FSM — six states:**
+Not every field must be present on every card, but preserve existing
+frontmatter when editing. Runtime fields such as `dispatch_id`, `session_id`,
+`dispatched_at`, `last_attempt_outcome`, and `block_reason` are managed by the
+CLI during lifecycle transitions.
+
+## 3. Lifecycle FSM
 
 | State | Transitions |
 |-------|-------------|
 | `open` | dispatch -> `dispatched`, block -> `blocked`, close -> `closed` |
 | `dispatched` | complete -> `done`, fail -> `failed`, cancel -> `open` |
-| `failed` | reopen -> `open` (attempts++), block -> `blocked`, close -> `closed` |
+| `failed` | reopen -> `open`, block -> `blocked`, close -> `closed` |
 | `blocked` | reopen -> `open` |
-| `done` | reopen -> `open` (result archived to Log), close -> `closed` |
-| `closed` | _(terminal — no outgoing transitions)_ |
+| `done` | reopen -> `open`, close -> `closed` |
+| `closed` | terminal; no outgoing transitions |
 
-- `closed` = conceptually dead, never retry. Use for tickets that are no longer relevant, duplicate, or impossible. Distinct from `failed` (operationally broken but retryable).
-- **Terminal states:** `done`, `failed`, `blocked`, `closed`. Non-terminal: `open`, `dispatched`. `IsTerminal()` returns true for the four terminal states.
-- Auto-block: after `max_retry` (default 3) consecutive failures, ticket auto-blocks.
+Terminal states are `done`, `failed`, `blocked`, and `closed`. Non-terminal
+states are `open` and `dispatched`.
 
-**Dependency semantics — `depends_on` vs `awaits`:**
+Use `closed` for work that is conceptually dead, duplicate, or no longer worth
+retrying. Use `failed` for operational failures that may be retried. After
+`max_retry` consecutive failures, tickets auto-block by default.
+
+## 4. Dependencies
 
 | Field | Gate type | Dispatches when | Use case |
 |-------|-----------|-----------------|----------|
-| `depends_on` | Hard — "I need their output" | All listed tickets reach `done` | Build depends on design spec |
-| `awaits` | Soft — "I need them finished" | All listed tickets reach any terminal state (`done`, `failed`, `blocked`, `closed`) | Audits, reports, cleanup, aggregation |
+| `depends_on` | Hard dependency | All listed tickets are `done` | Build work needs upstream output |
+| `awaits` | Soft dependency | All listed tickets are terminal | Audit, cleanup, aggregation |
 
-Both fields can coexist on one ticket; both must be satisfied before dispatch. Missing `awaits` normalizes to `[]` (backward compatible).
+Both fields can coexist; both gates must clear before dispatch. Prefer
+`depends_on` only when the downstream worker needs successful upstream output.
+Prefer `awaits` when downstream work can proceed once upstream work has ended,
+regardless of outcome.
 
-**CLI by actor:**
+## 5. Low-Effort Ticket Authoring
+
+Tickets should be cheap to create and precise enough to verify. The
+coordinator writes two things:
+
+1. A succinct ask: what the worker should deliver.
+2. A done gate: what must be true when the work is acceptable.
+
+Good scope:
+
+```markdown
+## Scope
+Survey current approaches to vector database filtering with approximate
+nearest-neighbor search. Compare at least four approaches by recall impact,
+latency impact, implementation complexity, and production maturity.
+
+**Done means:** Result includes a compact comparison table, links to primary
+sources or implementation docs, and a recommendation for a small product team.
+```
+
+Weak scope:
+
+```markdown
+## Scope
+Search the web, open five tabs, summarize each page, then write a conclusion.
+```
+
+The strong version defines the artifact and acceptance gate. It does not
+micromanage the worker's method.
+
+### Context
+
+Use `## Context` for cold-start onboarding only:
+- files or docs the worker must read;
+- relevant prior ticket IDs;
+- domain background that is not obvious;
+- working directory if it differs from repo root.
+
+Prefer references to files over pasted content. Long context makes the card
+harder to use and wastes worker attention.
+
+### Tiers
+
+| Tier | Use |
+|------|-----|
+| `worker` | Standard research, writing, audits, and implementation tasks |
+| `deep` | Multi-step work that needs more reasoning or synthesis |
+| `heavy` | Complex tasks needing stronger resources or longer timeouts |
+
+Tier is not a substitute for a clear scope. It also does not inherently choose
+a profile unless local configuration maps it that way.
+
+## 6. Initiatives
+
+Initiatives group tickets by domain and can carry defaults in their markdown
+frontmatter, commonly `default_profile` and `default_skills`.
+
+Create a new initiative only when explicitly requested:
+
+```bash
+tickets init RESEARCH --title "Research Tasks"
+```
+
+Before filing under an initiative, read its initiative doc if present:
+
+```bash
+tickets initiatives
+```
+
+Then use the initiative's own instructions for domain-specific scope patterns,
+skills, default profile, and caveats. This skill owns the generic lifecycle;
+initiative docs own local routing knowledge.
+
+## 7. Dispatch Resolution
+
+Dispatch configuration resolves by source:
+
+| Field | Resolution order |
+|-------|------------------|
+| `profile` | CLI `--profile` -> card frontmatter -> initiative `default_profile` -> `.tickets.toml` defaults |
+| `skills` | CLI `--skills` -> initiative `default_skills` -> empty; inherited at create time |
+| `engine`, `model`, `effort` | CLI flag -> card frontmatter -> `.tickets.toml` defaults |
+
+Use explicit overrides for unusual work, but prefer initiative defaults for
+ordinary tickets in that initiative.
+
+Profiles often imply an engine/model through local agent-mux configuration. If
+you need to override a profile-routed model, set both `engine` and `model`
+explicitly on the card or CLI so dispatch can pass a coherent override.
+
+Batch dispatch accepts comma-separated IDs:
+
+```bash
+tickets dispatch RESEARCH-001,RESEARCH-002
+```
+
+Manual dispatch serializes calls with a small stagger delay from config. For
+large batches, use scheduler flow instead:
+
+```bash
+tickets dispatch-ready --dry-run
+tickets dispatch-ready --max 3
+```
+
+## 8. Commands By Role
 
 | Coordinator | Scheduler | Worker |
 |-------------|-----------|--------|
-| `create --initiative X --title "..." --tier worker [--awaits A,B]` | `tick [--max-dispatch N]` | `complete <ID>` |
-| `dispatch <ID>[,ID...] [--profile --engine --model --effort]` | `reconcile [--dry-run]` | `fail <ID> --reason "..."` |
+| `create --initiative X --title "..." --tier worker` | `tick` | `complete <ID>` |
+| `dispatch <ID>[,ID...] [--profile ...]` | `reconcile [--dry-run]` | `fail <ID> --reason "..."` |
 | `dispatch-ready [--max N] [--dry-run]` | `dispatch-ready [--max N]` | `show <ID>` |
-| `show <ID>`, `list`, `board`, `initiatives` | | |
-| `cancel <ID>`, `reopen <ID>`, `block <ID> --reason "..."` | | |
-| `close <ID> --reason "..."` | | |
-| `init <NAME> --title "..."` | | |
+| `summary`, `board`, `list`, `show <ID>` | | |
+| `cancel`, `reopen`, `block`, `close` | | |
+| `init`, `edit`, `migrate`, `delete` | | |
 
-**Tick cycle:** `tick` acquires a file lock, then runs: reconcile -> stall-detect -> dispatch-ready. Safe for LaunchAgent scheduling.
+Useful query commands:
+- `tickets summary` gives compact counts by status and initiative.
+- `tickets board --status dispatched` shows active work.
+- `tickets board --status failed` shows failures needing attention.
+- `tickets board --initiative RESEARCH` scopes the board to one initiative.
+- `tickets show RESEARCH-001` displays the full card.
 
-**Reconcile:** Scans all `dispatched` cards. For each, queries `agent-mux status <dispatch_id>`. It is result-sensitive: substantial `## Result` content wins over raw agent-mux exit status. `completed` without a substantial Result fails the ticket; `failed` or `timeout` with a substantial Result marks it done. Backfills `session_id` when available. Terminal cards (done/failed/blocked/closed) are never re-queried. Status query failures are tolerated up to `max_retry` before auto-failing.
+## 9. Reconcile, Tick, And Monitoring
 
----
+`tickets tick` is the automation cycle. It runs under a file lock and performs:
 
-## 2. Initiative Routing
+1. `reconcile`
+2. stall detection
+3. `dispatch-ready`
 
-**Mental model:** `tickets init` is called ONLY when the user explicitly asks for a new initiative. Never guess. If a ticket does not map exactly to an existing initiative, route to the best available candidate.
+Use it for scheduled or periodic processing. It is designed to be safe for a
+cron job or scheduler service.
 
-**Current initiatives:**
+`tickets reconcile` scans `dispatched` cards and queries agent-mux status for
+each `dispatch_id`. It is result-sensitive: substantial `## Result` content can
+mark a ticket done even if the backend status is failure or timeout, while a
+backend completion without a meaningful result can fail the ticket. Reconcile
+also backfills `session_id` when available.
 
-| Initiative | Scope |
-|------------|-------|
-| `RECON` | Unattended research, pre-initiative exploration |
-| `SERENDIPITY` | Serendipity capture, enrichment, compounding |
-| `OPS` | Operational/infrastructure tasks |
-| `PAPER-OPS` | Paper ingestion, analysis, and synthesis (any domain). **Engine: Codex gpt-5.4 xhigh** (gemini deprioritized 2026-04-21 — see `INITIATIVES/PAPER-OPS.md`). |
+Run reconcile manually when a worker appears finished but the card was not
+transitioned:
 
-Each initiative doc at `centerpiece/tickets/INITIATIVES/{NAME}.md` carries dispatch defaults, operational context, and worker onboarding. Read the initiative doc before dispatching.
+```bash
+tickets reconcile --dry-run
+tickets reconcile
+```
 
-**Routing rules:**
-- User says "look into X" with no clear project -> `RECON`
-- User shares a link/article/idea for capture -> `SERENDIPITY`
-- Infra, tooling, maintenance -> `OPS`
-- If genuinely no initiative fits, ask the user. Do not invent one silently.
-- If the user says "create an initiative for X" -> then and only then run `tickets init`.
+Stall detection runs inside `tick`. It warns on long-running dispatched tickets
+and can auto-fail tickets that exceed configured timeouts. Timeouts come from
+tier defaults and optional per-initiative overrides.
 
----
+## 10. Common Workflows
 
-## 3. Card Authoring — The Low-Effort Principle
+### Turn a user ask into tickets
 
-**REQUIRED: Read the initiative card before creating any ticket.** The card lives at `centerpiece/tickets/INITIATIVES/{INITIATIVE}.md`. Initiative cards carry domain-specific guidance: scope templates, source type caveats, done criteria, dispatch mechanics, and `default_profile` (the profile may already include all the domain knowledge the worker needs — do not duplicate it with skills). This skill owns the general ticket lifecycle; initiative cards own the per-domain knowledge. If no initiative card exists, proceed with the general patterns below.
+1. Identify the initiative. If no existing initiative fits, ask instead of
+   inventing one.
+2. Read the initiative doc for defaults and local guidance.
+3. Create the card:
 
-**Mental model:** Tickets should be low-effort to create. Give the worker a good enough scope — do not do the job for them. The coordinator writes two things:
+```bash
+tickets create --initiative RESEARCH --title "Survey vector filtering" --tier worker
+```
 
-1. **A succinct ask** — what we want, plain language.
-2. **A verification gate** — semantic definition of "done" (what the result looks like when it is right, not a step-by-step recipe).
+4. Edit `## Context` and `## Scope`.
+5. Stop and report created ticket IDs unless dispatch was requested.
 
-### Good vs bad Scope
+### Dispatch requested tickets
 
-**Good** — concise ask + clear gate:
+1. Check active work:
+
+```bash
+tickets board --status dispatched
+```
+
+2. Preview readiness if using scheduler dispatch:
+
+```bash
+tickets dispatch-ready --dry-run
+```
+
+3. Dispatch within configured caps:
+
+```bash
+tickets dispatch RESEARCH-001
+```
+
+4. Monitor with `tickets summary`, `tickets board --status dispatched`, and
+   `tickets reconcile --dry-run`.
+
+### Retry a failed or blocked ticket
+
+1. Inspect the card:
+
+```bash
+tickets show RESEARCH-001
+```
+
+2. Reopen:
+
+```bash
+tickets reopen RESEARCH-001
+```
+
+3. Edit scope/context if the previous attempt exposed missing information.
+4. Dispatch again or let the scheduler pick it up.
+
+### Aggregate after a batch
+
+Use `awaits` when the aggregation should run after all target tickets finish,
+even if some failed:
+
+```bash
+tickets create --initiative RESEARCH \
+  --title "Synthesize vector filtering survey" \
+  --tier deep \
+  --awaits RESEARCH-001,RESEARCH-002,RESEARCH-003
+```
+
+Use `depends_on` when the aggregate requires successful upstream outputs.
+
+## 11. Report Contract
+
+When reporting ticket work, keep the synthesis short:
+
 ```markdown
-## Scope
-Survey compression techniques for 3DGS: quantization, pruning,
-codebook approaches, compact representations. For each: method name,
-paper/repo, compression ratio, quality impact (PSNR/SSIM delta).
-Note production-ready vs research-only.
-
-**Done means:** Result has a structured survey of 4+ techniques
-with compression ratios and quality tradeoffs.
+Done:
+Found:
+Evidence:
+Changed paths:
+Blocked:
+Next:
 ```
 
-**Bad** — step-by-step instructions that do the worker's thinking:
-```markdown
-## Scope
-1. Open Google Scholar and search "3DGS compression"
-2. Find the LightGaussian paper and summarize it
-3. Find the HAC++ paper and summarize it
-4. Create a markdown table with columns: Method, Paper URL, ...
-5. Write a conclusion paragraph comparing them
-```
-
-The first tells the worker WHAT to deliver and HOW to know it is done. The second micromanages HOW to do the work — that is the worker's job.
-
-### Context section
-
-`## Context` is cold-start onboarding. Include only what a zero-context worker needs:
-- Files to read (skill paths, related tickets, project docs)
-- Brief background if the domain is non-obvious
-- Working directory when it differs from repo root
-
-Keep it minimal. Over-stuffing Context wastes the worker's context window.
-
-### Skills vs Profiles
-
-**Profiles carry domain knowledge.** When an initiative sets a `default_profile` (e.g., `paper-ops-worker`), that profile's system prompt already includes the specialized instructions the worker needs. Do not add a skill that duplicates what the profile provides — the profile IS the skill for the worker.
-
-**Skills add tooling, not knowledge.** Add skills only when the worker needs capabilities the profile doesn't provide:
-- `web-search` — worker needs to fetch URLs or search the web
-- `pratchett-read` — worker needs to search the knowledge base
-
-Skills are set in card frontmatter: `skills: [web-search]`. Initiatives can set `default_skills` in their frontmatter (e.g., `default_skills: [web-search]`), which are inherited by new tickets at creation time when no explicit `--skills` flag is passed.
-
-### Context files
-
-Reference files the worker must read in `## Context`. Do not paste their contents — give paths. The worker reads them.
-
-### Tier selection
-
-| Tier | When to use |
-|------|-------------|
-| `worker` | Standard tasks: research, surveys, writing, audits. Default. |
-| `deep` | Multi-step tasks requiring extended reasoning. |
-| `heavy` | Complex tasks needing stronger models or longer timeouts. |
-
-**Not a ticket:** Trivial tasks (< 2 min of work) — just do them inline or dispatch a subagent directly. Not everything needs a card.
-
-**Not a ticket:** Tasks requiring real-time human dialogue or iterative refinement — those are conversations, not fire-and-forget units.
-
----
-
-## 4. Dispatch Configuration
-
-### Profile routing
-
-Profiles do not come from ticket tier. `dispatch` resolves `profile` through the standard chain, regardless of whether the card is `worker`, `deep`, or `heavy`:
-
-- CLI `--profile`
-- card frontmatter `profile`
-- initiative markdown `default_profile`
-- `.tickets.toml` `[defaults].profile`
-
-Use an explicit profile override when the task needs one; tier alone does not switch profiles.
-
-### Override heuristics
-
-Resolution order:
-- `profile`: CLI `--profile` -> card frontmatter -> initiative markdown `default_profile` -> `.tickets.toml` global default
-- `skills`: CLI `--skills` -> initiative markdown `default_skills` -> empty (inherited at create time)
-- `engine` / `model` / `effort`: CLI flag -> card frontmatter -> `.tickets.toml` global defaults
-
-Per-initiative engine/model/profile preferences live in the initiative doc (`centerpiece/tickets/INITIATIVES/{NAME}.md`), not here. This skill owns the generic dispatch process; initiative docs own the per-initiative config.
-
-Override when:
-- Task needs Claude instead of Codex: `--engine claude --model claude-sonnet-4-6 --effort high`
-- Task needs stronger model on Codex: `--profile ticket-worker-heavy`
-- Research task needs web: set `skills: [web-search]` in card frontmatter (does not affect engine choice)
-
-### Model override rule (critical)
-
-When a profile handles engine selection (e.g., `paper-ops-worker` → gemini), the dispatch code omits `--engine` and `--model` from the agent-mux call, letting the profile define them. This means **setting only `model:` on a card without `engine:` has no effect** — the model is suppressed alongside the engine, and the profile's default model is used.
-
-**To override the model while keeping a profile-routed engine:** set BOTH `engine:` and `model:` on the card frontmatter. Both must resolve as `SourceCard` for the dispatch code to pass them through to agent-mux.
-
-```yaml
-# Wrong — model is silently ignored, profile's default model wins:
-engine: null
-model: gemini-3.1-pro-preview
-
-# Correct — both passed to agent-mux:
-engine: gemini
-model: gemini-3.1-pro-preview
-```
-
-The logic: `ShouldPassEngineFlags` returns true only when engine comes from CLI or card level. When engine falls to config defaults and a profile is set from a higher source (initiative/card), engine flags are suppressed — and model/effort are gated on the same flag.
-
-### Config defaults (`.tickets.toml`)
-
-```toml
-engine  = "codex"
-model   = "gpt-5.4-mini"
-effort  = "xhigh"
-profile = "jenkins-junior"
-max_retry = 3
-stagger_seconds = 2
-```
-
-### Concurrency limits
-
-**Respect engine concurrency caps from `.tickets.toml`.** Before dispatching, check how many tickets are already `dispatched` per engine. Current limits:
-
-| Engine | Max concurrent |
-|--------|---------------|
-| codex | 5 |
-| gemini | 4 |
-| claude | 3 |
-
-`dispatch-ready` enforces these caps automatically. Manual `tickets dispatch` does NOT — the coordinator must check `tickets board --status dispatched` and count before dispatching a batch. Exceeding limits risks agent-mux failures or queuing delays.
-
-### Batch dispatch
-
-Comma-separated IDs: `tickets dispatch RECON-010,RECON-011,RECON-012`
-
-Manual multi-ID dispatch serializes calls with a small inter-dispatch sleep
-(`cfg.StaggerSeconds` with a 1s floor by default). Solo dispatch never sleeps.
-Set `--stagger-seconds=0` to disable entirely, or pass an explicit `N` to
-override both config and floor.
-
-Historical note: the original 15s floor existed because agent-mux `--async`
-did not daemonize and attached children were SIGKILL'd on parent exit. That
-root cause was fixed in agent-mux v3.4.1 (commit `c37febe`, 2026-04-21) —
-`--async` now detaches and the parent-death reaper is gated off on that
-path. The floor dropped to 1s after the fix landed; the remaining stagger
-is only light protection against Codex/OpenAI rate-limit spikes when
-dispatching many IDs at once.
-
-Dispatch parsing note: `agent-mux --async` may emit preview JSON before the
-worker starts. `tickets dispatch` ignores non-`async_started` JSON and records
-the `dispatch_id` from the `kind=async_started` event only.
-
-### Dry run
-
-Always available for validation:
-- `tickets dispatch-ready --dry-run` — shows what would be dispatched
-- `tickets reconcile --dry-run` — shows what state transitions would happen
-
-Use `--dry-run` before real dispatch when batch size > 3 or when unsure about readiness.
-
----
-
-## 5. Monitoring & Lifecycle
-
-### Agent-efficient commands (use these first)
-
-`tickets summary` — counts by status × initiative, ~100 tokens. Start here.
-`tickets board --status dispatched` — only active work, resolved engine/model names.
-`tickets board --status failed` — only failures needing attention.
-`tickets board --initiative PAPER-OPS` — scoped to one initiative.
-
-### Full views (human-facing, ~2k+ tokens)
-
-`tickets board` — full kanban view, all tickets. Use `--status` or `--initiative` to filter. Tickets with unresolved soft dependencies show an `(awaits)` suffix to distinguish them from hard-dep blocks.
-`tickets list --status dispatched` — all currently running tickets.
-`tickets show <ID>` — full card with dispatch fields and log.
-
-### Reconcile
-
-Runs automatically inside `tick`. Manual run: `tickets reconcile`.
-
-What it does: polls `agent-mux status` for each dispatched ticket, then decides based on both backend status and `## Result` content. A substantial Result can cause reconcile to mark a ticket `done` even when agent-mux reports `failed` or `timeout`; a missing/placeholder Result can cause a `completed` run to be marked `failed`. It also backfills `session_id` during the running-card pass. Terminal cards (done/failed/blocked/closed) are not re-queried.
-
-Run manually when: you suspect a worker finished but the card was not updated (worker crashed after writing Result but before calling `tickets complete`).
-
-### Stall detection
-
-Runs automatically inside `tick` after reconcile.
-
-What it does:
-- Finds `dispatched` tickets whose elapsed time exceeds their stall timeout.
-- Prints `[STALL_WARNING]` lines for visibility.
-- Auto-fails stalled tickets using the same failure path as reconcile.
-- Uses `initiatives.<NAME>.stall_timeout_minutes` when configured, otherwise tier defaults from `[stall_timeout_minutes]`.
-- Falls back to the last `dispatched --` log entry when `dispatched_at` is absent or invalid.
-
-### Reopen/retry
-
-`tickets reopen <ID>` — moves failed/blocked/done back to open. On failed: increments `attempts`, clears dispatch fields. On done: archives existing Result to Log before clearing.
-
-Retry flow: reopen -> (optionally edit Scope/Context) -> dispatch again.
-
-### Terminal states
-
-| Action | From | When to use |
-|--------|------|-------------|
-| `cancel <ID>` | dispatched | Worker is running but the task is no longer needed. Returns to open, no attempt increment. |
-| `fail <ID> --reason "..."` | dispatched | Worker cannot complete. Called by worker or reconcile. |
-| `block <ID> --reason "..."` | open, failed | Task is stuck on an external dependency or needs human input. Requires a reason. |
-| `close <ID> --reason "..."` | open, done, failed | Conceptually dead. Never retry. Requires a reason. |
-
-### Workflow: user ask to ticket
-
-**Default flow: create open tickets, let the scheduler dispatch them.**
-
-The tick scheduler (`tickets tick` via LaunchAgent) runs `dispatch-ready` which respects concurrency caps, stagger delays, and `max_dispatch_per_tick`. It is the safe, rate-limited path. The coordinator should NOT manually dispatch unless the user explicitly asks.
-
-1. Parse user's ask. Identify initiative (Section 2).
-2. Read the initiative card at `centerpiece/tickets/INITIATIVES/{INITIATIVE}.md` for domain-specific ticket guidance (scope templates, caveats, done criteria).
-3. `tickets create --initiative X --title "..." --tier worker`
-4. Edit the created card: write `## Context` and `## Scope` using initiative card guidance + Section 3 principles.
-5. **Stop here.** Report created ticket IDs. The scheduler picks them up.
-
-**When the user explicitly asks to dispatch manually:**
-
-6. **First: check in-flight count.** Run `tickets board --status dispatched` and count how many are running per engine. Compare against concurrency caps in `.tickets.toml`. If at or near the cap — tell the user and wait, or dispatch only enough to fill remaining slots.
-7. `tickets dispatch <ID>[,ID...] --engine X --model Y --effort Z` (with explicit overrides per Section 4). Never dispatch more than the engine's concurrency cap in one batch.
-8. Monitor via `tickets board` or `tickets list --status dispatched`.
-9. Reconcile handles completion. Review result on the card.
-
-**Why this matters:** Bulk manual dispatches cause instant `killed_by_user`
-failures with 0 tokens consumed. Mechanism is NOT "Codex kills processes with
-SIGTERM" (earlier hypothesis) — it's the agent-mux parent-death reaper firing
-SIGKILL on attached codex process groups when the `tickets` binary exits (see
-§4 batch-dispatch known-bug note). The scheduler's stagger and concurrency caps
-prevent this because each `agent-mux` call is spaced enough that each `tickets`
-invocation exits cleanly with only one active child.
-
----
-
-## 6. GUARDIAN Audit Initiative
-
-GUARDIAN is an audit initiative that uses standard ticket mechanics — no special infrastructure. GUARDIAN tickets use `awaits` (not `depends_on`) to point at batches of ~10 target tickets. This means a GUARDIAN ticket dispatches once all its targets reach any terminal state, regardless of whether they succeeded or failed.
-
-**How it works:**
-1. A GUARDIAN ticket is filed `open` with `awaits: [PAPER-OPS-101, PAPER-OPS-102, ...]` listing ~10 target ticket IDs.
-2. The scheduler's `dispatch-ready` checks the `awaits` gate: all listed tickets must be terminal (`done`, `failed`, `blocked`, or `closed`).
-3. Once the gate clears, the GUARDIAN ticket dispatches automatically like any other ticket.
-4. The guardian-worker runs a pre-flight status check on each target as defense-in-depth: `done` tickets get audited, `failed`/`blocked`/`closed` are SKIPPED, `open`/`dispatched` are PENDING (should not happen if awaits gating worked correctly).
-5. GUARDIAN tickets are configured in `[guardian]` in `.tickets.toml` (engine, model, profile, initiative).
-
-**Coordinator role:** Create the GUARDIAN ticket with `--awaits` listing the target batch, file it `open`, and let the scheduler handle the rest. No manual dispatch needed.
+Evidence should include ticket IDs, relevant command output summaries, card
+paths when files were created, and any dry-run or reconcile results that prove
+the lifecycle state changed as intended.

@@ -1,2 +1,6 @@
 # Built binary
 /tickets
+
+# Local/private operational material
+/launchagents/
+/_archive/

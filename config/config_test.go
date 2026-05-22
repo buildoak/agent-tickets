@@ -169,7 +169,7 @@ engine = "codex"
 model = "gpt-5.4-mini"
 effort = "xhigh"
 profile = "ticket-worker"
-initiative = "GUARDIAN"
+initiative = "AUDIT"
 `)
 
 	prev, restore := chdir(t, root)

@@ -330,7 +330,7 @@ func TestCompleteRejectsPlaceholderResult(t *testing.T) {
 	}
 }
 
-func TestReconcileIgnoresPlaceholderResult(t *testing.T) {
+func TestBuildcileIgnoresPlaceholderResult(t *testing.T) {
 	baseDir := t.TempDir()
 	t.Setenv("TICKETS_BASE_DIR", baseDir)
 	withMockDispatcher(t, &dispatch.MockDispatcher{
@@ -758,7 +758,7 @@ func TestDispatchInitiativeProfileOmitsConfigEngine(t *testing.T) {
 	// agent-mux — let the profile define them.
 	baseDir := t.TempDir()
 	t.Setenv("TICKETS_BASE_DIR", baseDir)
-	writeConfigFile(t, baseDir, "[defaults]\nengine = \"codex\"\nmodel = \"gpt-5.4-mini\"\neffort = \"xhigh\"\nprofile = \"jenkins-junior\"\n")
+	writeConfigFile(t, baseDir, "[defaults]\nengine = \"codex\"\nmodel = \"gpt-5.4-mini\"\neffort = \"xhigh\"\nprofile = \"ticket-worker\"\n")
 	withWorkingDir(t, baseDir)
 
 	var gotOpts dispatch.DispatchOptions
@@ -769,16 +769,16 @@ func TestDispatchInitiativeProfileOmitsConfigEngine(t *testing.T) {
 		},
 	})
 
-	mustRun(t, "init", "PAPEROPS", "--title", "Paper operations")
+	mustRun(t, "init", "RESEARCH", "--title", "Paper operations")
 
 	// Patch the initiative file to include default_profile.
-	initPath := filepath.Join(baseDir, "INITIATIVES", "PAPEROPS.md")
-	initContent := fmt.Sprintf("---\ninitiative: PAPEROPS\ntitle: \"Paper operations\"\nstatus: active\ncreated: %s\ndefault_profile: paper-ops-worker\n---\n\n## Objective\n\n## Context\n\n## Conventions\n", time.Now().Format("2006-01-02"))
+	initPath := filepath.Join(baseDir, "INITIATIVES", "RESEARCH.md")
+	initContent := fmt.Sprintf("---\ninitiative: RESEARCH\ntitle: \"Paper operations\"\nstatus: active\ncreated: %s\ndefault_profile: paper-ops-worker\n---\n\n## Objective\n\n## Context\n\n## Conventions\n", time.Now().Format("2006-01-02"))
 	if err := os.WriteFile(initPath, []byte(initContent), 0o644); err != nil {
 		t.Fatalf("write initiative: %v", err)
 	}
 
-	id := strings.TrimSpace(mustRunStdout(t, "create", "--initiative", "PAPEROPS", "--title", "Extract knowledge", "--tier", "worker"))
+	id := strings.TrimSpace(mustRunStdout(t, "create", "--initiative", "RESEARCH", "--title", "Extract knowledge", "--tier", "worker"))
 	mustRun(t, "dispatch", id)
 
 	// Profile should come from initiative.
@@ -810,7 +810,7 @@ func TestDispatchInitiativeProfileWithCLIEngineOverride(t *testing.T) {
 	// the engine flag should still be passed through.
 	baseDir := t.TempDir()
 	t.Setenv("TICKETS_BASE_DIR", baseDir)
-	writeConfigFile(t, baseDir, "[defaults]\nengine = \"codex\"\nmodel = \"gpt-5.4-mini\"\nprofile = \"jenkins-junior\"\n")
+	writeConfigFile(t, baseDir, "[defaults]\nengine = \"codex\"\nmodel = \"gpt-5.4-mini\"\nprofile = \"ticket-worker\"\n")
 	withWorkingDir(t, baseDir)
 
 	var gotOpts dispatch.DispatchOptions
@@ -821,16 +821,16 @@ func TestDispatchInitiativeProfileWithCLIEngineOverride(t *testing.T) {
 		},
 	})
 
-	mustRun(t, "init", "PAPEROPS", "--title", "Paper operations")
+	mustRun(t, "init", "RESEARCH", "--title", "Paper operations")
 
 	// Patch the initiative file to include default_profile.
-	initPath := filepath.Join(baseDir, "INITIATIVES", "PAPEROPS.md")
-	initContent := fmt.Sprintf("---\ninitiative: PAPEROPS\ntitle: \"Paper operations\"\nstatus: active\ncreated: %s\ndefault_profile: paper-ops-worker\n---\n\n## Objective\n\n## Context\n\n## Conventions\n", time.Now().Format("2006-01-02"))
+	initPath := filepath.Join(baseDir, "INITIATIVES", "RESEARCH.md")
+	initContent := fmt.Sprintf("---\ninitiative: RESEARCH\ntitle: \"Paper operations\"\nstatus: active\ncreated: %s\ndefault_profile: paper-ops-worker\n---\n\n## Objective\n\n## Context\n\n## Conventions\n", time.Now().Format("2006-01-02"))
 	if err := os.WriteFile(initPath, []byte(initContent), 0o644); err != nil {
 		t.Fatalf("write initiative: %v", err)
 	}
 
-	id := strings.TrimSpace(mustRunStdout(t, "create", "--initiative", "PAPEROPS", "--title", "With CLI engine", "--tier", "worker"))
+	id := strings.TrimSpace(mustRunStdout(t, "create", "--initiative", "RESEARCH", "--title", "With CLI engine", "--tier", "worker"))
 	mustRun(t, "dispatch", id, "--engine", "claude", "--model", "opus")
 
 	if gotOpts.Profile != "paper-ops-worker" {
@@ -908,7 +908,7 @@ func TestCompleteNilDispatchID(t *testing.T) {
 	}
 }
 
-func TestReconcileCompletedWithResult(t *testing.T) {
+func TestBuildcileCompletedWithResult(t *testing.T) {
 	baseDir := t.TempDir()
 	t.Setenv("TICKETS_BASE_DIR", baseDir)
 	withMockDispatcher(t, &dispatch.MockDispatcher{
@@ -918,7 +918,7 @@ func TestReconcileCompletedWithResult(t *testing.T) {
 	})
 
 	mustRun(t, "init", "ALPHA", "--title", "Alpha")
-	id := strings.TrimSpace(mustRunStdout(t, "create", "--initiative", "ALPHA", "--title", "Reconcile me", "--tier", "worker"))
+	id := strings.TrimSpace(mustRunStdout(t, "create", "--initiative", "ALPHA", "--title", "Buildcile me", "--tier", "worker"))
 	mustRun(t, "dispatch", id, "--engine", "codex", "--model", "gpt-5.4")
 
 	doc := mustParseTicket(t, baseDir, id)
@@ -933,7 +933,7 @@ func TestReconcileCompletedWithResult(t *testing.T) {
 	}
 }
 
-func TestReconcileCompletedNoResult(t *testing.T) {
+func TestBuildcileCompletedNoResult(t *testing.T) {
 	baseDir := t.TempDir()
 	t.Setenv("TICKETS_BASE_DIR", baseDir)
 	withMockDispatcher(t, &dispatch.MockDispatcher{
@@ -957,7 +957,7 @@ func TestReconcileCompletedNoResult(t *testing.T) {
 	}
 }
 
-func TestReconcileFailed(t *testing.T) {
+func TestBuildcileFailed(t *testing.T) {
 	baseDir := t.TempDir()
 	t.Setenv("TICKETS_BASE_DIR", baseDir)
 	withMockDispatcher(t, &dispatch.MockDispatcher{
@@ -978,7 +978,7 @@ func TestReconcileFailed(t *testing.T) {
 	}
 }
 
-func TestReconcileFailedIncludesBackendError(t *testing.T) {
+func TestBuildcileFailedIncludesBackendError(t *testing.T) {
 	baseDir := t.TempDir()
 	t.Setenv("TICKETS_BASE_DIR", baseDir)
 	withMockDispatcher(t, &dispatch.MockDispatcher{
@@ -1003,7 +1003,7 @@ func TestReconcileFailedIncludesBackendError(t *testing.T) {
 	}
 }
 
-func TestReconcileStatusQueryErrorRetriesBeforeFailing(t *testing.T) {
+func TestBuildcileStatusQueryErrorRetriesBeforeFailing(t *testing.T) {
 	baseDir := t.TempDir()
 	t.Setenv("TICKETS_BASE_DIR", baseDir)
 	writeConfigFile(t, baseDir, "max_retry = 2\n")
@@ -1038,7 +1038,7 @@ func TestReconcileStatusQueryErrorRetriesBeforeFailing(t *testing.T) {
 	}
 }
 
-func TestReconcileRunning(t *testing.T) {
+func TestBuildcileRunning(t *testing.T) {
 	baseDir := t.TempDir()
 	t.Setenv("TICKETS_BASE_DIR", baseDir)
 	withMockDispatcher(t, &dispatch.MockDispatcher{
@@ -1062,7 +1062,7 @@ func TestReconcileRunning(t *testing.T) {
 	}
 }
 
-func TestReconcileDryRun(t *testing.T) {
+func TestBuildcileDryRun(t *testing.T) {
 	baseDir := t.TempDir()
 	t.Setenv("TICKETS_BASE_DIR", baseDir)
 	withMockDispatcher(t, &dispatch.MockDispatcher{
@@ -1164,16 +1164,16 @@ func TestCreateInheritsDefaultSkillsFromInitiative(t *testing.T) {
 	baseDir := t.TempDir()
 	t.Setenv("TICKETS_BASE_DIR", baseDir)
 
-	mustRun(t, "init", "PAPEROPS", "--title", "Paper operations")
+	mustRun(t, "init", "RESEARCH", "--title", "Paper operations")
 
 	// Patch the initiative file to include default_skills.
-	initPath := filepath.Join(baseDir, "INITIATIVES", "PAPEROPS.md")
-	initContent := fmt.Sprintf("---\ninitiative: PAPEROPS\ntitle: \"Paper operations\"\nstatus: active\ncreated: %s\ndefault_profile: paper-ops-worker\ndefault_skills:\n- web-search\n---\n\n## Objective\n\n## Context\n\n## Conventions\n", time.Now().Format("2006-01-02"))
+	initPath := filepath.Join(baseDir, "INITIATIVES", "RESEARCH.md")
+	initContent := fmt.Sprintf("---\ninitiative: RESEARCH\ntitle: \"Paper operations\"\nstatus: active\ncreated: %s\ndefault_profile: paper-ops-worker\ndefault_skills:\n- web-search\n---\n\n## Objective\n\n## Context\n\n## Conventions\n", time.Now().Format("2006-01-02"))
 	if err := os.WriteFile(initPath, []byte(initContent), 0o644); err != nil {
 		t.Fatalf("write initiative: %v", err)
 	}
 
-	id := strings.TrimSpace(mustRunStdout(t, "create", "--initiative", "PAPEROPS", "--title", "Inherit skills", "--tier", "worker"))
+	id := strings.TrimSpace(mustRunStdout(t, "create", "--initiative", "RESEARCH", "--title", "Inherit skills", "--tier", "worker"))
 
 	doc := mustParseTicket(t, baseDir, id)
 	if got := doc.Card.Skills; len(got) != 1 || got[0] != "web-search" {
@@ -1185,20 +1185,20 @@ func TestCreateExplicitSkillsOverrideInitiativeDefaults(t *testing.T) {
 	baseDir := t.TempDir()
 	t.Setenv("TICKETS_BASE_DIR", baseDir)
 
-	mustRun(t, "init", "PAPEROPS", "--title", "Paper operations")
+	mustRun(t, "init", "RESEARCH", "--title", "Paper operations")
 
 	// Patch the initiative file to include default_skills.
-	initPath := filepath.Join(baseDir, "INITIATIVES", "PAPEROPS.md")
-	initContent := fmt.Sprintf("---\ninitiative: PAPEROPS\ntitle: \"Paper operations\"\nstatus: active\ncreated: %s\ndefault_skills:\n- web-search\n---\n\n## Objective\n\n## Context\n\n## Conventions\n", time.Now().Format("2006-01-02"))
+	initPath := filepath.Join(baseDir, "INITIATIVES", "RESEARCH.md")
+	initContent := fmt.Sprintf("---\ninitiative: RESEARCH\ntitle: \"Paper operations\"\nstatus: active\ncreated: %s\ndefault_skills:\n- web-search\n---\n\n## Objective\n\n## Context\n\n## Conventions\n", time.Now().Format("2006-01-02"))
 	if err := os.WriteFile(initPath, []byte(initContent), 0o644); err != nil {
 		t.Fatalf("write initiative: %v", err)
 	}
 
-	id := strings.TrimSpace(mustRunStdout(t, "create", "--initiative", "PAPEROPS", "--title", "Override skills", "--tier", "worker", "--skills", "pratchett-read"))
+	id := strings.TrimSpace(mustRunStdout(t, "create", "--initiative", "RESEARCH", "--title", "Override skills", "--tier", "worker", "--skills", "web-search"))
 
 	doc := mustParseTicket(t, baseDir, id)
-	if got := doc.Card.Skills; len(got) != 1 || got[0] != "pratchett-read" {
-		t.Fatalf("expected skills [pratchett-read], got %#v", got)
+	if got := doc.Card.Skills; len(got) != 1 || got[0] != "web-search" {
+		t.Fatalf("expected skills [web-search], got %#v", got)
 	}
 }
 
@@ -1597,8 +1597,8 @@ worker = 1
 	if !strings.Contains(out, ticketID) {
 		t.Fatalf("expected stalled ticket ID in output, got %q", out)
 	}
-	// No GUARDIAN ticket should be created.
-	if _, err := findTicketFile(baseDir, "GUARDIAN-001"); err == nil {
+	// No AUDIT ticket should be created.
+	if _, err := findTicketFile(baseDir, "AUDIT-001"); err == nil {
 		t.Fatalf("did not expect guardian ticket")
 	}
 }
@@ -1740,12 +1740,12 @@ profile = "batch"
 	withWorkingDir(t, baseDir)
 	withMockDispatcher(t, &dispatch.MockDispatcher{})
 
-	mustRun(t, "init", "PAPEROPS", "--title", "Paper operations")
+	mustRun(t, "init", "RESEARCH", "--title", "Paper operations")
 
 	// Patch the initiative file to include default_profile.
-	initPath := filepath.Join(baseDir, "INITIATIVES", "PAPEROPS.md")
+	initPath := filepath.Join(baseDir, "INITIATIVES", "RESEARCH.md")
 	initContent := fmt.Sprintf(
-		"---\ninitiative: PAPEROPS\ntitle: \"Paper operations\"\nstatus: active\ncreated: %s\ndefault_profile: paper-ops-worker\n---\n\n## Objective\n\n## Context\n\n## Conventions\n",
+		"---\ninitiative: RESEARCH\ntitle: \"Paper operations\"\nstatus: active\ncreated: %s\ndefault_profile: paper-ops-worker\n---\n\n## Objective\n\n## Context\n\n## Conventions\n",
 		time.Now().Format("2006-01-02"),
 	)
 	if err := os.WriteFile(initPath, []byte(initContent), 0o644); err != nil {
@@ -1753,8 +1753,8 @@ profile = "batch"
 	}
 
 	// Create and dispatch two tickets via the initiative (profile-defined path).
-	aID := strings.TrimSpace(mustRunStdout(t, "create", "--initiative", "PAPEROPS", "--title", "Paper A", "--tier", "worker"))
-	bID := strings.TrimSpace(mustRunStdout(t, "create", "--initiative", "PAPEROPS", "--title", "Paper B", "--tier", "worker"))
+	aID := strings.TrimSpace(mustRunStdout(t, "create", "--initiative", "RESEARCH", "--title", "Paper A", "--tier", "worker"))
+	bID := strings.TrimSpace(mustRunStdout(t, "create", "--initiative", "RESEARCH", "--title", "Paper B", "--tier", "worker"))
 
 	mustRun(t, "dispatch", aID)
 	mustRun(t, "dispatch", bID)
@@ -1811,7 +1811,7 @@ engine = "codex"
 model = "gpt-5.4-mini"
 effort = "xhigh"
 profile = "ticket-worker"
-initiative = "GUARDIAN"
+initiative = "AUDIT"
 `)
 	withWorkingDir(t, baseDir)
 
@@ -1987,10 +1987,10 @@ func TestMigrate(t *testing.T) {
 	baseDir := t.TempDir()
 	t.Setenv("TICKETS_BASE_DIR", baseDir)
 
-	mustRun(t, "init", "RECON", "--title", "Recon")
+	mustRun(t, "init", "BUILD", "--title", "Build")
 	mustRun(t, "init", "STARK", "--title", "Stark")
 
-	id := strings.TrimSpace(mustRunStdout(t, "create", "--initiative", "RECON", "--title", "Explore", "--tier", "worker"))
+	id := strings.TrimSpace(mustRunStdout(t, "create", "--initiative", "BUILD", "--title", "Explore", "--tier", "worker"))
 
 	mustRun(t, "migrate", id, "STARK")
 
@@ -2011,11 +2011,11 @@ func TestMigrateUpdatesDependsOn(t *testing.T) {
 	baseDir := t.TempDir()
 	t.Setenv("TICKETS_BASE_DIR", baseDir)
 
-	mustRun(t, "init", "RECON", "--title", "Recon")
+	mustRun(t, "init", "BUILD", "--title", "Build")
 	mustRun(t, "init", "STARK", "--title", "Stark")
 
-	a := strings.TrimSpace(mustRunStdout(t, "create", "--initiative", "RECON", "--title", "A", "--tier", "worker"))
-	b := strings.TrimSpace(mustRunStdout(t, "create", "--initiative", "RECON", "--title", "B", "--tier", "worker", "--depends-on", a))
+	a := strings.TrimSpace(mustRunStdout(t, "create", "--initiative", "BUILD", "--title", "A", "--tier", "worker"))
+	b := strings.TrimSpace(mustRunStdout(t, "create", "--initiative", "BUILD", "--title", "B", "--tier", "worker", "--depends-on", a))
 
 	mustRun(t, "migrate", a, "STARK")
 
@@ -2030,10 +2030,10 @@ func TestMigrateRefusesDispatched(t *testing.T) {
 	t.Setenv("TICKETS_BASE_DIR", baseDir)
 	withMockDispatcher(t, &dispatch.MockDispatcher{})
 
-	mustRun(t, "init", "RECON", "--title", "Recon")
+	mustRun(t, "init", "BUILD", "--title", "Build")
 	mustRun(t, "init", "STARK", "--title", "Stark")
 
-	id := strings.TrimSpace(mustRunStdout(t, "create", "--initiative", "RECON", "--title", "In flight", "--tier", "worker"))
+	id := strings.TrimSpace(mustRunStdout(t, "create", "--initiative", "BUILD", "--title", "In flight", "--tier", "worker"))
 	mustRun(t, "dispatch", id, "--engine", "codex", "--model", "gpt-5.4")
 
 	err := run([]string{"migrate", id, "STARK"})
@@ -2046,10 +2046,10 @@ func TestMigrateDryRun(t *testing.T) {
 	baseDir := t.TempDir()
 	t.Setenv("TICKETS_BASE_DIR", baseDir)
 
-	mustRun(t, "init", "RECON", "--title", "Recon")
+	mustRun(t, "init", "BUILD", "--title", "Build")
 	mustRun(t, "init", "STARK", "--title", "Stark")
 
-	id := strings.TrimSpace(mustRunStdout(t, "create", "--initiative", "RECON", "--title", "Preview", "--tier", "worker"))
+	id := strings.TrimSpace(mustRunStdout(t, "create", "--initiative", "BUILD", "--title", "Preview", "--tier", "worker"))
 
 	out := mustRunStdout(t, "migrate", id, "STARK", "--dry-run")
 	if !strings.Contains(out, "Would migrate") {
@@ -2057,7 +2057,7 @@ func TestMigrateDryRun(t *testing.T) {
 	}
 
 	doc := mustParseTicket(t, baseDir, id)
-	if doc.Card.Initiative != "RECON" {
+	if doc.Card.Initiative != "BUILD" {
 		t.Fatalf("dry-run should not change initiative: %s", doc.Card.Initiative)
 	}
 }
@@ -2298,7 +2298,7 @@ func writeConfigFile(t *testing.T, dir, body string) {
 	}
 }
 
-func TestReconcileBackfillsSessionIDWhileRunning(t *testing.T) {
+func TestBuildcileBackfillsSessionIDWhileRunning(t *testing.T) {
 	baseDir := t.TempDir()
 	t.Setenv("TICKETS_BASE_DIR", baseDir)
 	withMockDispatcher(t, &dispatch.MockDispatcher{
@@ -2331,7 +2331,7 @@ func TestReconcileBackfillsSessionIDWhileRunning(t *testing.T) {
 	}
 }
 
-func TestReconcileBackfillsSessionIDOnComplete(t *testing.T) {
+func TestBuildcileBackfillsSessionIDOnComplete(t *testing.T) {
 	baseDir := t.TempDir()
 	t.Setenv("TICKETS_BASE_DIR", baseDir)
 	withMockDispatcher(t, &dispatch.MockDispatcher{
@@ -2371,7 +2371,7 @@ func TestReconcileBackfillsSessionIDOnComplete(t *testing.T) {
 // terminal cards. Session backfill is still exercised for running
 // (dispatched) and just-transitioning cards via the other reconcile tests.
 
-func TestReconcileAutoBlocksWhenRetryBudgetExhausted(t *testing.T) {
+func TestBuildcileAutoBlocksWhenRetryBudgetExhausted(t *testing.T) {
 	baseDir := t.TempDir()
 	t.Setenv("TICKETS_BASE_DIR", baseDir)
 	writeConfigFile(t, baseDir, "max_retry = 1\n")
@@ -2400,16 +2400,16 @@ func TestNextSequenceCaseInsensitive(t *testing.T) {
 	dir := t.TempDir()
 
 	// Write a file with a lowercase name to simulate macOS case-collision scenario.
-	if err := os.WriteFile(filepath.Join(dir, "recon-005.md"), []byte(""), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "build-005.md"), []byte(""), 0o644); err != nil {
 		t.Fatalf("write lowercase file: %v", err)
 	}
 
-	seq, err := nextSequence(dir, "RECON")
+	seq, err := nextSequence(dir, "BUILD")
 	if err != nil {
 		t.Fatalf("nextSequence error: %v", err)
 	}
 	if seq != 6 {
-		t.Fatalf("expected seq 6 (after seeing recon-005.md case-insensitively), got %d", seq)
+		t.Fatalf("expected seq 6 (after seeing build-005.md case-insensitively), got %d", seq)
 	}
 }
 
@@ -2695,11 +2695,11 @@ func TestMigrateUpdatesAwaits(t *testing.T) {
 	baseDir := t.TempDir()
 	t.Setenv("TICKETS_BASE_DIR", baseDir)
 
-	mustRun(t, "init", "RECON", "--title", "Recon")
+	mustRun(t, "init", "BUILD", "--title", "Build")
 	mustRun(t, "init", "STARK", "--title", "Stark")
 
-	a := strings.TrimSpace(mustRunStdout(t, "create", "--initiative", "RECON", "--title", "A", "--tier", "worker"))
-	b := strings.TrimSpace(mustRunStdout(t, "create", "--initiative", "RECON", "--title", "B", "--tier", "worker", "--awaits", a))
+	a := strings.TrimSpace(mustRunStdout(t, "create", "--initiative", "BUILD", "--title", "A", "--tier", "worker"))
+	b := strings.TrimSpace(mustRunStdout(t, "create", "--initiative", "BUILD", "--title", "B", "--tier", "worker", "--awaits", a))
 
 	mustRun(t, "migrate", a, "STARK")
 
@@ -2807,12 +2807,12 @@ func TestMigrateUpdatesBothDependsOnAndAwaits(t *testing.T) {
 	baseDir := t.TempDir()
 	t.Setenv("TICKETS_BASE_DIR", baseDir)
 
-	mustRun(t, "init", "RECON", "--title", "Recon")
+	mustRun(t, "init", "BUILD", "--title", "Build")
 	mustRun(t, "init", "STARK", "--title", "Stark")
 
-	a := strings.TrimSpace(mustRunStdout(t, "create", "--initiative", "RECON", "--title", "A", "--tier", "worker"))
+	a := strings.TrimSpace(mustRunStdout(t, "create", "--initiative", "BUILD", "--title", "A", "--tier", "worker"))
 	// Create B with both depends_on and awaits pointing to A.
-	b := strings.TrimSpace(mustRunStdout(t, "create", "--initiative", "RECON", "--title", "B", "--tier", "worker", "--depends-on", a, "--awaits", a))
+	b := strings.TrimSpace(mustRunStdout(t, "create", "--initiative", "BUILD", "--title", "B", "--tier", "worker", "--depends-on", a, "--awaits", a))
 
 	mustRun(t, "migrate", a, "STARK")
 
