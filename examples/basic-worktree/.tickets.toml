@@ -1,0 +1,29 @@
+base_dir = "tickets"
+agent_mux_bin = "agent-mux"
+max_retry = 3
+stagger_seconds = 2
+max_dispatch_per_tick = 1
+skill_path = ""
+
+[defaults]
+profile = "ticket-worker"
+engine = "codex"
+model = "your-model-name"
+effort = "high"
+
+[stall_timeout_minutes]
+worker = 30
+deep = 45
+heavy = 60
+
+[concurrency]
+codex = 3
+
+[model_weight]
+your-model-name = 1
+
+[profile_engine]
+ticket-worker = "codex"
+
+[profile_model]
+ticket-worker = "your-model-name"

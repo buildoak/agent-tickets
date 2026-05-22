@@ -130,6 +130,46 @@ open -- created
 
 The important bit is not the YAML per se. It is that humans and agents are looking at the same object. No hidden database state, no separate dashboard truth.
 
+## Initiatives Are Contracts
+
+This is the part I care about most.
+
+An initiative is not a tag. It is a tiny operating manual for a repeated kind of work. The folder gives the cards a namespace; the initiative doc gives workers the repeated context so every ticket does not have to carry the same wall of onboarding.
+
+```text
+tickets/
+  INITIATIVES/
+    RESEARCH.md
+    BUILD.md
+    OPS.md
+  cards/
+    RESEARCH/
+      RESEARCH-001.md
+    BUILD/
+      BUILD-001.md
+```
+
+Put stable workflow rules in `INITIATIVES/<NAME>.md`: objective, routing, default profile, default skills, scope pattern, and done criteria.
+
+Put task-specific facts in `cards/<NAME>/<ID>.md`: context, scope, result, and log.
+
+That split is what keeps the system from mode-collapsing into a pile of prompts. The initiative says what kind of work this is. The card says what needs to happen now.
+
+See [docs/initiatives.md](docs/initiatives.md) for the full pattern.
+
+## Templates And Example Tree
+
+The repo includes starter templates:
+
+- [templates/initiative.md](templates/initiative.md)
+- [templates/ticket.md](templates/ticket.md)
+
+And a minimal example worktree:
+
+- [examples/basic-worktree](examples/basic-worktree)
+
+You can copy the example tree, run `tickets board` from inside it, and inspect the shape without setting up `agent-mux`.
+
 ## Lifecycle
 
 ```text

@@ -188,6 +188,10 @@ a profile unless local configuration maps it that way.
 Initiatives group tickets by domain and can carry defaults in their markdown
 frontmatter, commonly `default_profile` and `default_skills`.
 
+Use `templates/initiative.md` as a starter when creating a reusable workflow
+contract. Use `docs/initiatives.md` when deciding whether a new initiative is
+actually warranted.
+
 Create a new initiative only when explicitly requested:
 
 ```bash
