@@ -23,9 +23,11 @@ available as `tickets`.
 and board summaries are witnesses. Accept work only after checking the card
 result against its scope and done gate.
 
-**Default flow:** create a clear ticket, leave it `open`, and let
-`tickets tick` or `tickets dispatch-ready` dispatch eligible work. Manually
-dispatch only when the user explicitly asks or the workflow requires it.
+**Default flow:** create a clear ticket with `manual: false`, leave it `open`,
+and let `tickets tick` or `tickets dispatch-ready` dispatch eligible work. Use
+`--manual` only when the user explicitly asks for controlled/manual validation
+or when there is a concrete race/safety reason. Manually dispatch only when the
+user explicitly asks or the workflow requires it.
 
 **Before creating a ticket:**
 - Choose an existing initiative unless the user explicitly asks for a new one.
